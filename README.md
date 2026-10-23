@@ -51,12 +51,31 @@ node online-demo/tests/engine.test.mjs
 ```text
 mednexus/          Python本地服务、医学学习示例、网页与回归测试
 online-demo/       独立浏览器演示、静态课程数据与引擎测试
+shuye-demo/        书页：教材页级溯源问答（独立副本，见下节）
 docs/             演示链接与测试说明
 开始使用医枢.bat    Windows相对路径启动脚本
 LICENSE           原仓库MIT许可证
 ```
 
 原始Word需求文件、用户截图、教材原文、本机学习数据库、模型密钥、部署账户配置和临时发布压缩包均未入库。
+
+## 目录 shuye-demo：教材页级溯源问答
+
+与医枢并列的第二套实现，**独立目录、互不覆盖**。差异：
+
+| | 医枢 mednexus | 书页 shuye-demo |
+|---|---|---|
+| 解决的问题 | 学没学会、下一步学什么 | 答案出处可不可核验 |
+| 核心机制 | 主动诊断 → 按要点评分 → 补学 | 教材页级引用 → 生成后回查 → 拒答 |
+| 知识底座 | 自建知识点与题库 | 三本人卫教材，5,667 段落块 |
+| 文献 | 有条件触发 | PubMed 检索式生成 + 证据分级 |
+| 启动 | `python mednexus/server.py --open` | `python shuye-demo/server.py 7860` |
+
+说明：
+
+- 默认端口相同（7860），同时运行需错开，例如 `python shuye-demo/server.py 7861`
+- 仓库不含教材与索引（`.gitignore` 已排除），首次运行需按 `shuye-demo/README.md` 生成
+- 细节见 [shuye-demo/快速开始.md](shuye-demo/快速开始.md)
 
 ## 当前验证边界
 

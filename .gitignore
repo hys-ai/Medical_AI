@@ -24,3 +24,16 @@ reference-review/
 *.log
 
 # online-demo/dist/ contains maintained static source and is intentionally tracked.
+
+# shuye-demo: textbooks and derived indexes stay local (copyright + size)
+*.pdf
+book_*.jsonl
+chunks.jsonl
+embeddings.npy
+embedding_ids.json
+libs/
+python.exe
+*.mp4
+*.bundle
+.server.pid
+.Rhistory
