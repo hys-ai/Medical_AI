@@ -5,6 +5,7 @@
 - [在线演示](https://mednexus-learning-demo-1023.bar20070507.chatgpt.site)
 - [测试情况与逐项记录](https://mednexus-learning-demo-1023.bar20070507.chatgpt.site/#verification)
 - [完整演示与测试说明](docs/演示链接与测试情况.md)
+- [部署到 Google Cloud Run](docs/Google-Cloud-Run-部署.md)
 
 当前覆盖系统解剖学“脑神经”的10个知识点与20道三要点题。总览、课程、章节和报告可实际使用，初始成绩为空，状态根据真实作答更新。
 
