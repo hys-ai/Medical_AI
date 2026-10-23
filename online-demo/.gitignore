@@ -1,0 +1,4 @@
+qa/
+*.tar.gz
+*.tar
+__pycache__/

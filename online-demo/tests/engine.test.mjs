@@ -1,0 +1,45 @@
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {performance} from 'node:perf_hooks';
+import {DemoAgent} from '../dist/demo-engine.js';
+const catalog=JSON.parse((await readFile(new URL('../dist/course.json',import.meta.url),'utf8')).replace(/^\uFEFF/,''));
+const memory=()=>{const values=new Map();return {getItem:k=>values.get(k)||null,setItem:(k,v)=>values.set(k,v)};};
+const make=()=>new DemoAgent(catalog,memory(),async()=>{throw new Error('Network disabled in unit test');});
+async function answer(a,count=3,kind='diagnostic',cid='oculomotor'){
+  const task=await a.call('task',{concept:cid,kind});
+  const q=catalog.concepts.find(c=>c.id===cid).questions.find(q=>q.kind===kind);
+  return a.call('answer',{token:task.token,answers:q.points.map((p,i)=>i<count?p.correct:'暂时不确定')});
+}
+const cases=[];const started=performance.now();
+async function test(name,fn){const s=performance.now();try{await fn();cases.push({name,status:'passed',duration_ms:+(performance.now()-s).toFixed(2)});}catch(error){cases.push({name,status:'failed',duration_ms:+(performance.now()-s).toFixed(2),error:error.message});}}
+await test('初始记录无虚构成绩',async()=>{const s=await make().call('bootstrap');assert.equal(s.stats.attempts,0);assert.equal(s.stats.mastered,0);assert.ok(s.concepts.every(c=>c.score===null));});
+await test('题库确有10个知识点和20道三要点题',()=>{assert.equal(catalog.concepts.length,10);assert.equal(catalog.concepts.flatMap(c=>c.questions).length,20);assert.ok(catalog.concepts.every(c=>c.questions.every(q=>q.points.length===3)));});
+await test('阅读只更新覆盖不更新掌握',async()=>{const a=make();await a.call('study',{concept:'oculomotor'});const c=(await a.call('bootstrap')).concepts[0];assert.ok(c.viewed);assert.equal(c.score,null);assert.equal(c.status,'未测评');});
+await test('只答对一个要点得33分并补缺口',async()=>{const r=await answer(make(),1);assert.equal(r.score,33);assert.equal(r.action,'followup');assert.equal(r.rubric.filter(p=>p.correct).length,1);});
+await test('全错先补基础全对进入迁移',async()=>{assert.equal((await answer(make(),0)).action,'study');assert.equal((await answer(make(),3)).action,'transfer');});
+await test('单次满分不能判为掌握',async()=>{const a=make();await answer(a);assert.equal(a.progress()[0].status,'初步达标');});
+await test('重复同一道题不能制造不同题目证据',async()=>{const a=make();await answer(a);await answer(a);assert.equal(a.progress()[0].distinct,1);assert.notEqual(a.progress()[0].status,'已掌握');});
+await test('两个不同达标题含迁移后满足掌握规则',async()=>{const a=make();await answer(a);await answer(a,3,'transfer');assert.equal(a.progress()[0].status,'已掌握');});
+await test('掌握后答错会回到需巩固',async()=>{const a=make();await answer(a);await answer(a,3,'transfer');await answer(a,0,'transfer');assert.equal(a.progress()[0].status,'需巩固');});
+await test('重复提交同一令牌只记一次',async()=>{const a=make();const task=await a.call('task',{concept:'oculomotor'});const body={token:task.token,answers:catalog.concepts[0].questions[0].points.map(p=>p.correct)};const r=await a.call('answer',body);assert.deepEqual(await a.call('answer',body),r);assert.equal(a.state.attempts.length,1);});
+await test('无效任务令牌被拒绝',async()=>{const a=make();await assert.rejects(()=>a.call('answer',{token:'invalid',answers:[]}),/切换/);});
+await test('任意布尔值不能冒充结构化答案',async()=>{const a=make();const t=await a.call('task',{concept:'oculomotor'});await assert.rejects(()=>a.call('answer',{token:t.token,answers:[true,true,true]}),/选择/);});
+await test('刷新恢复当前题目和已保存成绩',async()=>{const s=memory();let a=new DemoAgent(catalog,s);const t=await a.call('task',{concept:'oculomotor'});a=new DemoAgent(catalog,s);assert.deepEqual((await a.call('bootstrap')).active,t);await answer(a,1);const b=new DemoAgent(catalog,s);assert.equal((await b.call('report')).history[0].score,33);});
+await test('不同浏览器存储不共享学习记录',async()=>{const a=make(),b=make();await answer(a);assert.equal((await b.call('bootstrap')).stats.attempts,0);});
+await test('医学问题返回可核对学习卡且不编造页码',async()=>{const r=await make().call('ask',{query:'动眼神经损伤为什么上睑下垂'});assert.equal(r.refused,false);assert.ok(r.citations.every(s=>s.page===null));assert.ok(r.segments.every(seg=>r.citations.find(s=>s.id===seg.source_id).text.includes(seg.quote)));});
+await test('域外问题含为什么也会拒答',async()=>{const a=make();for(const query of ['量子纠缠是什么','为什么股票会上涨','明天郑州天气'])assert.ok((await a.call('ask',{query})).refused);});
+await test('记忆问题与无关科研问题不进入PubMed',async()=>{const a=make();assert.equal((await a.call('research',{concept:'oculomotor',question:'动眼神经是第几对'})).eligible,false);assert.equal((await a.call('research',{concept:'oculomotor',question:'量子纠缠有何研究证据'})).eligible,false);});
+await test('全部知识点的预编研究疑问可进入探索',async()=>{const a=make();for(const c of catalog.concepts)assert.ok((await a.call('research',{concept:c.id,question:''})).eligible,c.id);});
+await test('导入批次验证失败不留下部分资料',async()=>{const a=make();await assert.rejects(()=>a.call('import',{records:[{book:'讲义',chapter:'甲',page:1},{book:'无效',chapter:'乙',page:null}]}));assert.equal(a.state.sources.length,0);});
+await test('脚本协议来源链接被拒绝',async()=>{await assert.rejects(()=>make().call('import',{records:[{book:'讲义',chapter:'甲',page:1,url:'javascript:alert(1)'}]}),/https/);});
+await test('元数据索引只定位不成为答案原文',async()=>{const a=make();await a.call('import',{records:[{book:'自写索引测试',chapter:'虚构索引测试词',page:12,keywords:['虚构索引测试词']}]});const r=await a.call('ask',{query:'虚构索引测试词是什么'});assert.ok(r.refused);assert.equal(r.citations[0].page,12);});
+await test('授权文本导入可检索且重复内容去重',async()=>{const a=make();const records=[{book:'自写测试讲义',chapter:'虚构索引测试词',page:12,keywords:['虚构索引测试词'],text:'虚构索引测试词用于软件验证，不代表医学结论。'}];await a.call('import',{records});await a.call('import',{records});assert.equal(a.state.sources.length,1);assert.equal((await a.call('ask',{query:'虚构索引测试词是什么'})).refused,false);});
+await test('网络失败不生成假文献并保留PubMed链接',async()=>{const a=make();await assert.rejects(()=>a.call('literature',{concept:'oculomotor',query:catalog.concepts[0].query,question:catalog.concepts[0].research}),err=>!!err.url?.startsWith('https://pubmed.ncbi.nlm.nih.gov/'));assert.equal(Object.keys(a.state.cache).length,0);});
+await test('零检索结果返回空列表而不补造论文',async()=>{const a=new DemoAgent(catalog,memory(),async()=>new Response(JSON.stringify({esearchresult:{idlist:[],count:'0'}})));const r=await a.call('literature',{concept:'oculomotor',query:catalog.concepts[0].query,question:catalog.concepts[0].research});assert.equal(r.count,0);assert.deepEqual(r.papers,[]);});
+await test('未检索的PMID不能进入阅读页',async()=>{await assert.rejects(()=>make().call('read-paper',{concept:'oculomotor',pmid:'12345'}),/真实文献/);});
+await test('清空必须明确确认',async()=>{const a=make();await answer(a);await assert.rejects(()=>a.call('reset',{}));assert.equal(a.state.attempts.length,1);await a.call('reset',{confirmation:'CLEAR_MY_LEARNING'});assert.equal(a.state.attempts.length,0);});
+await test('完整33分补学100分迁移仍保留不确定性',async()=>{const a=make();await answer(a,1);await a.call('study',{concept:'oculomotor'});await answer(a,3,'transfer');const r=await a.call('report');assert.equal(r.concepts[0].pre,33);assert.equal(r.concepts[0].post,100);assert.equal(r.concepts[0].score,73);assert.equal(r.concepts[0].status,'初步达标');assert.ok(r.errors['机制理解']);});
+await test('导出记录包含真实过程且标明在线演示版本',async()=>{const a=make();await answer(a,1);const r=await a.call('export');assert.equal(r.edition,'public-browser-demo');assert.equal(r.report.history[0].score,33);});
+const failed=cases.filter(c=>c.status!=='passed').length;
+process.stdout.write(JSON.stringify({suite:'Browser demo learning engine regression',tested_at:new Date().toISOString(),node:process.version,total:cases.length,passed:cases.length-failed,failed,duration_ms:+(performance.now()-started).toFixed(2),cases}));
+process.exitCode=failed?1:0;
