@@ -34,6 +34,9 @@ API_KEY = os.environ.get("MEDNEXUS_API_KEY", "")
 MODEL = os.environ.get("MEDNEXUS_MODEL", "deepseek-chat")
 BASE_URL = os.environ.get("MEDNEXUS_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
 
+# 书页 UI 不带身份头时使用的本机默认身份（本机单人使用）
+DEFAULT_LEARNER = hashlib.sha256(b"mednexus-local").hexdigest()[:48]
+
 
 class InputError(Exception):
     pass
@@ -439,6 +442,147 @@ def report(db, learner):
             "method": "要点等权计分；EMA=0.4×旧值+0.6×本次得分（首次为本次值）。掌握需两个不同题目均达标、包含迁移题、最近两次均≥80%且EMA≥80%。看过不算掌握；此规则是原型设计，未作学习效果验证。"}
 
 
+# ---------- 书页 UI 适配层 ----------
+# 书页前端调用 /api/overview、/api/ask、/api/pubmed；
+# 这里把它们映射到本项目的教学引擎，界面不用改。
+
+def _book_stats():
+    """教材来源按书汇总：段落数、页码范围。"""
+    books = {}
+    for s in textbook_sources():
+        b = books.setdefault(s["book"], {"book": s["book"], "chunks": 0, "min": 10 ** 6, "max": 0})
+        b["chunks"] += 1
+        if isinstance(s.get("page"), int):
+            b["min"] = min(b["min"], s["page"])
+            b["max"] = max(b["max"], s["page"])
+    out = []
+    for b in books.values():
+        if b["min"] == 10 ** 6:
+            b["min"] = 0
+        out.append(b)
+    out.sort(key=lambda x: -x["chunks"])
+    return out
+
+
+def _recent(db, learner, limit=8):
+    rows = db.execute("SELECT created,payload FROM events WHERE learner=? AND kind='ask' ORDER BY id DESC LIMIT ?",
+                      (learner, limit)).fetchall()
+    out = []
+    for created, payload in rows:
+        try:
+            p = json.loads(payload)
+        except Exception:
+            p = {}
+        out.append({"ts": created, "time": time.strftime("%m-%d %H:%M", time.localtime(created)),
+                    "query": p.get("query", ""), "book": p.get("book", ""), "page": p.get("page", 0) or 0,
+                    "mode": "教材检索", "cited_ok": bool(p.get("page"))})
+    return out
+
+
+def _weak(db, learner, limit=6):
+    """反复提问的页段：按 ask 事件里的 book+page 十位分桶。"""
+    rows = db.execute("SELECT payload FROM events WHERE learner=? AND kind='ask' ORDER BY id DESC LIMIT 200",
+                      (learner,)).fetchall()
+    counter = collections.Counter()
+    for (payload,) in rows:
+        try:
+            p = json.loads(payload)
+        except Exception:
+            continue
+        page, book = p.get("page"), p.get("book")
+        if isinstance(page, int) and page > 0 and book:
+            counter[(book, page // 10 * 10)] += 1
+    out = []
+    for (book, bucket), n in counter.most_common(limit):
+        if n >= 2:
+            out.append({"book": book, "page": bucket, "count": n})
+    return out
+
+
+def overview_payload(db, learner):
+    snap = snapshot(db, learner)
+    books = _book_stats()
+    history = report(db, learner).get("history", [])
+    return {
+        "questions": {"total": len(history), "week": sum(1 for h in history if time.time() - h["created"] < 7 * 86400),
+                      "week_cited": sum(1 for h in history if time.time() - h["created"] < 7 * 86400 and h["score"] > 0)},
+        "books": books,
+        "chunks": sum(b["chunks"] for b in books),
+        "recent": _recent(db, learner),
+        "weak": _weak(db, learner),
+        "concepts": snap["concepts"],
+        "recommendation": snap["recommendation"],
+        "stats": snap["stats"],
+        "status": {"llm": bool(API_KEY), "model": MODEL if API_KEY else "本地规则引擎",
+                   "pubmed": True, "coverage_threshold": textbook.MIN_COVERAGE,
+                   "textbook": textbook.status()["loaded"]},
+    }
+
+
+def ask_compat(db, learner, body):
+    """把书页的 {question} 映射到本项目的 ask({query, concept})，并返回书页需要的字段。"""
+    question = str(body.get("question") or body.get("query") or "").strip()
+    if not question:
+        raise InputError("问题不能为空")
+    state = state_get(db, learner)
+    cid = body.get("concept") or state.get("concept") or CONCEPTS[0]["id"]
+    if cid not in CONCEPT_MAP:
+        cid = CONCEPTS[0]["id"]
+    result = ask(db, learner, {"query": question, "concept": cid})
+
+    cites, answer_parts = [], []
+    for seg in result.get("segments", []):
+        src = next((s for s in result.get("citations", []) if s["id"] == seg["source_id"]), None)
+        if not src:
+            continue
+        answer_parts.append(seg.get("quote", ""))
+        cites.append({"book": src.get("book", ""), "page": src.get("page"), "ok": True,
+                      "reason": "教材原文命中，页码来自本地索引" if src.get("kind") == "textbook" else "自编学习卡，无页码",
+                      "snippet": seg.get("quote", "")[:60]})
+    # 答案卡只放最相关的一段（多段拼在一起会变成无关内容的堆叠）
+    answer_text = answer_parts[0] if answer_parts else result.get("message", "")
+    if answer_parts and cites:
+        top = cites[0]
+        tail = "（依据《%s》P%s）" % (top["book"], top["page"]) if top.get("page") else "（依据%s）" % top["book"]
+        answer_text = answer_text + tail
+    if not cites:
+        for src in result.get("citations", [])[:3]:
+            cites.append({"book": src.get("book", ""), "page": src.get("page"),
+                          "ok": src.get("kind") == "textbook",
+                          "reason": "候选来源" if src.get("kind") == "textbook" else "自编学习卡",
+                          "snippet": str(src.get("text", ""))[:60]})
+    top = next((s for s in result.get("citations", []) if s.get("kind") == "textbook"), {})
+    coverage = float(top.get("coverage", 0)) if top else 0.0
+
+    tips = []
+    rec = recommend(progress(db, learner))
+    if rec:
+        tips.append("当前最需要推进的是「%s」：%s" % (rec["name"], rec["status"]))
+    tips.append("回答只来自检索到的原文；找不到依据时会明确拒答，不猜。")
+
+    return {"question": question, "question_id": 0,
+            "answer": answer_text,
+            "mode": "教材检索" if result.get("segments") else "拒答",
+            "refused": bool(result.get("refused")), "coverage": round(coverage, 2),
+            "expanded": [], "citations": cites, "chunks": result.get("citations", []),
+            "papers": [], "pubmed_note": "", "tips": tips, "warning": result.get("warning", "")}
+
+
+def pubmed_compat(db, learner, body):
+    """书页的 /api/pubmed：用概念预设检索式，或把中文疑问交给研究闸门判断。"""
+    question = str(body.get("question") or "").strip()
+    cid = body.get("concept")
+    state = state_get(db, learner)
+    cid = cid if cid in CONCEPT_MAP else (state.get("concept") or CONCEPTS[0]["id"])
+    c = CONCEPT_MAP[cid]
+    gate = research_gate(c, question)
+    query = gate.get("query") or c["query"]
+    if not re.search(r"[a-zA-Z]{3}", str(query)):
+        raise InputError("检索式需要是英文；当前知识点未提供可用模板")
+    out = pubmed(query)
+    return {"papers": out["papers"], "note": query, "gate": gate}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "MedNexus/1.0"
 
@@ -463,6 +607,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def learner(self):
         learner = self.headers.get("X-Learner-ID", "")
+        if not learner:
+            # 书页 UI 不带身份头：本机单人使用，落到固定的本地身份
+            return DEFAULT_LEARNER
         if not re.fullmatch(r"[a-f0-9]{48}", learner):
             raise InputError("学习身份无效，请刷新页面")
         return learner
@@ -476,6 +623,10 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/"):
             try:
                 learner = self.learner()
+                if path == "/api/overview":
+                    # 书页首页：教材规模 + 最近学习 + 薄弱点 + 运行状态
+                    with LOCK, connect() as db:
+                        return self.send(overview_payload(db, learner))
                 with LOCK, connect() as db:
                     if path == "/api/bootstrap":
                         return self.send(snapshot(db, learner))
@@ -486,6 +637,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send({"error": "接口不存在"}, 404)
             except InputError as e:
                 return self.send({"error": str(e)}, 400)
+            except Exception as e:
+                return self.send({"error": "服务处理失败：%s" % e}, 500)
         target = (ROOT / "web" / (urllib.parse.unquote(path).lstrip("/") or "index.html")).resolve()
         if not target.is_relative_to(ROOT / "web") or not target.is_file():
             return self.send({"error": "文件不存在"}, 404)
@@ -512,6 +665,19 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 raise InputError("请求格式应为 JSON 对象")
             path = urllib.parse.urlparse(self.path).path
+            if path == "/api/pubmed":
+                _t0 = time.time()
+                with connect() as db:
+                    out = pubmed_compat(db, learner, body)
+                out["_ms"] = int((time.time() - _t0) * 1000)
+                return self.send(out)
+            if path == "/api/ask" and ("question" in body and "query" not in body):
+                # 书页 UI 的形态：{question, pubmed}
+                _t0 = time.time()
+                with connect() as db:
+                    out = ask_compat(db, learner, body)
+                out["_ms"] = int((time.time() - _t0) * 1000)
+                return self.send(out)
             if path == "/api/literature":
                 cid = body.get("concept")
                 if cid not in CONCEPT_MAP:
@@ -595,6 +761,8 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
         except Exception:
+            import traceback
+            traceback.print_exc()
             return self.send({"error": "服务处理失败，请重试；本次未生成评估结果。"}, 500)
 
 
