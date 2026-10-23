@@ -2,10 +2,10 @@
 
 面向医学生的主动学习与科研探索智能体原型。围绕具体知识点完成“主动诊断 → 按要点评分 → 针对性补学 → 有条件的文献探索 → 迁移再测 → 学习报告”。
 
-- [在线演示](https://mednexus-learning-demo-1023.bar20070507.chatgpt.site)
-- [测试情况与逐项记录](https://mednexus-learning-demo-1023.bar20070507.chatgpt.site/#verification)
-- [完整演示与测试说明](docs/演示链接与测试情况.md)
-- [部署到 Google Cloud Run](docs/Google-Cloud-Run-部署.md)
+- [本机 / 内网运行与测试说明](docs/演示链接与测试情况.md)
+- [部署到 Google Cloud Run（可选，非必需）](docs/Google-Cloud-Run-部署.md)
+
+> 本项目**不依赖任何外部托管服务**：无需 ChatGPT、OpenAI 或云平台账号即可完整运行。
 
 当前覆盖系统解剖学“脑神经”的10个知识点与20道三要点题。总览、课程、章节和报告可实际使用，初始成绩为空，状态根据真实作答更新。
 

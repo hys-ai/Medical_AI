@@ -32,10 +32,25 @@ function toast(msg, ms = 2600) {
   t._t = setTimeout(() => t.classList.remove("show"), ms);
 }
 
+/* 每位浏览器一个学习身份，存在本地；同一台电脑换浏览器视为不同人 */
+function learnerId() {
+  const KEY = "mednexus-learner";
+  let v = localStorage.getItem(KEY);
+  if (!v || !/^[a-f0-9]{48}$/.test(v)) {
+    const buf = new Uint8Array(24);
+    crypto.getRandomValues(buf);
+    v = Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("");
+    localStorage.setItem(KEY, v);
+  }
+  return v;
+}
+
 async function api(path, payload) {
+  const headers = { "X-Learner-ID": learnerId() };
+  if (payload) headers["Content-Type"] = "application/json";
   const opt = payload
-    ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }
-    : { method: "GET" };
+    ? { method: "POST", headers, body: JSON.stringify(payload) }
+    : { method: "GET", headers };
   const res = await fetch(path, opt);
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "请求失败");

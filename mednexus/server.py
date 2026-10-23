@@ -38,6 +38,23 @@ BASE_URL = os.environ.get("MEDNEXUS_BASE_URL", "https://api.deepseek.com/v1").rs
 DEFAULT_LEARNER = hashlib.sha256(b"mednexus-local").hexdigest()[:48]
 
 
+def is_private_ip(ip):
+    """内网地址判断：10/8、172.16/12、192.168/16、127/8。"""
+    try:
+        parts = [int(x) for x in ip.split(".")]
+    except ValueError:
+        return False
+    if len(parts) != 4:
+        return False
+    if parts[0] == 10 or parts[0] == 127:
+        return True
+    if parts[0] == 192 and parts[1] == 168:
+        return True
+    if parts[0] == 172 and 16 <= parts[1] <= 31:
+        return True
+    return False
+
+
 class InputError(Exception):
     pass
 
@@ -591,9 +608,20 @@ class Handler(BaseHTTPRequestHandler):
         return
 
     def allowed(self):
+        """同源校验：默认只允许本机；绑定 0.0.0.0 时额外允许内网 IP，便于局域网演示。"""
+        port = self.server.server_port
         host = self.headers.get("Host", "").lower()
         origin = self.headers.get("Origin")
-        return host in {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"} and (not origin or origin in {f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}"})
+        hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        if self.server.server_address[0] in ("0.0.0.0", "", "::"):
+            m = re.fullmatch(r"(\d{1,3}(?:\.\d{1,3}){3}):(\d+)", host)
+            if m and int(m.group(2)) == port and is_private_ip(m.group(1)):
+                hosts.add(host)
+        if host not in hosts:
+            return False
+        if not origin:
+            return True
+        return origin.replace("http://", "").lower() in hosts
 
     def send(self, payload, status=200):
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -767,13 +795,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run MedNexus locally")
+    parser = argparse.ArgumentParser(description="Run MedNexus locally or on a LAN")
     parser.add_argument("port", type=int, nargs="?", default=7860)
     parser.add_argument("--open", action="store_true")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="监听地址；填 0.0.0.0 允许同内网其他设备访问（默认仅本机）")
     args = parser.parse_args()
     init_db()
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+        server = ThreadingHTTPServer((args.host, args.port), Handler)
     except OSError:
         if args.open:
             try:
@@ -789,6 +819,8 @@ def main():
         print(f"Port {args.port} is busy. Try: python server.py {args.port + 1}")
         raise SystemExit(1)
     print(f"MedNexus is running: http://127.0.0.1:{args.port}", flush=True)
+    if args.host in ("0.0.0.0", "::"):
+        print("LAN mode: other devices on the same network can open http://<this-pc-ip>:%d" % args.port, flush=True)
     print("Press Ctrl+C to stop. Learning data is saved locally.", flush=True)
     if args.open:
         import webbrowser
