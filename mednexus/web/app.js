@@ -88,7 +88,7 @@ function agentPanel(c = data.recommendation) {
   return `<section class="panel agent-panel"><div class="agent-heading"><span class="agent-icon">${icon('spark')}</span><div><strong>医枢的学习建议</strong><small>每一步，都有作答依据</small></div></div><p><b>${e(c.name)}</b><br>${reason}</p>${btn(c.status === '需巩固' ? '去补齐这个知识点' : '开始下一步', c.status === '需巩固' ? 'enter-study' : 'enter', {cid:c.id, light:true, icon:'arrow'})}</section>`;
 }
 function trustPanel() {
-  return `<section class="panel trust-panel"><div class="panel-title">${icon('shield')}学习依据，随时可核对</div><p>示例目标待教师审核。公开学习卡不标注教材页码；导入本地索引后，页码按索引显示并注明核验状态。</p></section>`;
+  return `<section class="panel trust-panel"><div class="panel-title">${icon('shield')}学习依据，随时可核对</div><p>示例目标待教师审核。回答优先引用本地教材索引（显示印刷页码，需对照正版核验）；索引未命中时才回退到公开学习卡，学习卡不标注页码。</p></section>`;
 }
 async function overview() {
   setPage('overview');

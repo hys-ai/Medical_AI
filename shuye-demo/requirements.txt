@@ -1,3 +1,0 @@
-# 核心链路（检索 / 引用校验 / 命令行）零依赖；以下仅 UI 与可选工具需要
-gradio>=4.0        # 网页界面 app.py
-# numpy>=1.24      # 启用向量检索时才需要（配合 tools/build_vectors.py）

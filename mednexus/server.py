@@ -23,6 +23,7 @@ import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from knowledge import CONCEPTS, CONCEPT_MAP, QUESTION_MAP, SOURCES, COURSE
+import textbook
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("MEDNEXUS_DB", str(ROOT / "data" / "learning.sqlite3")))
@@ -192,8 +193,16 @@ def builtins():
              "reference": SOURCES[c["source"]]["title"], "kind": "note", "provenance": "自编教学摘要，参考公开资料；不是原书逐字摘录", "concept": c["id"]} for c in CONCEPTS]
 
 
+def textbook_sources():
+    """教材页级索引（由书页项目并入）。没有索引文件时返回空列表。"""
+    try:
+        return [{k: v for k, v in s.items() if k != "coverage"} for s in textbook.ensure()["sources"]]
+    except Exception:
+        return []
+
+
 def all_sources(db, learner):
-    return builtins() + [json.loads(r[0]) for r in db.execute("SELECT payload FROM sources WHERE learner=?", (learner,))]
+    return textbook_sources() + builtins() + [json.loads(r[0]) for r in db.execute("SELECT payload FROM sources WHERE learner=?", (learner,))]
 
 
 def tokenize(text):
@@ -205,6 +214,16 @@ def tokenize(text):
 
 
 def retrieve(query, sources):
+    # 先查教材索引：命中就返回带印刷页码的原文段落，避免对 5,667 条逐条分词
+    try:
+        hits = textbook.search(query)
+    except Exception:
+        hits = []
+    if hits:
+        keep = {s["id"] for s in sources}
+        hits = [h for h in hits if h["id"] in keep] or hits
+        return [{**h, "coverage": h.get("coverage", 0)} for h in hits]
+
     qt = tokenize(query)
     if not qt:
         return []

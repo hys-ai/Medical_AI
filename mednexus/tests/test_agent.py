@@ -129,13 +129,20 @@ class AgentTests(unittest.TestCase):
                 self.assertTrue(server.ask(db, self.learner, {'query': q})['refused'])
 
     def test_relevant_question_retrieves_notes_without_fake_pages(self):
+        # 合并后：页码只允许来自教材索引（tb-*）；自编学习卡仍然不得带页码。
         with server.connect() as db:
             out = server.ask(db, self.learner, {'query': '动眼神经损伤为什么上睑下垂'})
             self.assertFalse(out['refused'])
-            self.assertTrue(all(s['page'] is None for s in out['citations']))
             sources = server.all_sources(db, self.learner)
+            by_id = {s['id']: s for s in sources}
+            for s in out['citations']:
+                if s['id'].startswith('tb-'):
+                    self.assertIsInstance(s['page'], int)
+                    self.assertEqual(by_id[s['id']]['page'], s['page'])
+                else:
+                    self.assertIsNone(s['page'])
             for seg in out['segments']:
-                s = next(s for s in sources if s['id'] == seg['source_id'])
+                s = by_id[seg['source_id']]
                 self.assertTrue(server.verify_citation(s, seg['quote'], sources))
 
     def test_forged_page_and_nonexistent_excerpt_fail_validation(self):
@@ -221,11 +228,16 @@ class AgentTests(unittest.TestCase):
         self.assertNotIn('不应展示',json.dumps(out,ensure_ascii=False))
 
     def test_model_valid_quote_explanation_is_still_labeled_unverified(self):
-        s=server.builtins()[0]
-        generated={'segments':[{'source_id':s['id'],'quote':s['text'][:50],'explanation':'测试用解释'}]}
-        with server.connect() as db, patch('server.API_KEY','test-only'), patch('server.model_json',return_value=generated):
-            out=server.ask(db,self.learner,{'query':'动眼神经损伤为什么上睑下垂'})
-        self.assertIn('解释仍需核对',out['mode'])
+        # 合并后检索优先返回教材段落，取真实命中的来源构造“合法引用”
+        with server.connect() as db:
+            sources = server.all_sources(db, self.learner)
+            hits = server.retrieve('动眼神经损伤为什么上睑下垂', sources)
+            self.assertTrue(hits)
+            s = hits[0]
+            generated = {'segments': [{'source_id': s['id'], 'quote': s['text'][:50], 'explanation': '测试用解释'}]}
+            with patch('server.API_KEY', 'test-only'), patch('server.model_json', return_value=generated):
+                out = server.ask(db, self.learner, {'query': '动眼神经损伤为什么上睑下垂'})
+        self.assertIn('解释仍需核对', out['mode'])
 
     def test_windows_https_fallback_never_evaluates_query_as_script(self):
         url='https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?term=test%26example'
