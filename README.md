@@ -52,7 +52,7 @@ python -m unittest discover -s mednexus/tests -v
 node online-demo/tests/engine.test.mjs
 ```
 
-2026-10-29本地版运行 `python -m unittest discover -s mednexus/tests -q`，78项通过；`node --test mednexus/tests/*.test.mjs` 的16项流程回归通过，覆盖课程资料校对、学习计划、任务恢复、分步提示与请求异常。课程资料入口支持233条大纲要求、55张组胚原图与207条待校对编号复习条目，并有逐行校对保存、草稿保留、修订历史、底稿恢复、片段筛选、原图缩放、条目跳转和文字导出。`online-demo/` 是独立静态演示，原有28项测试记录见 `online-demo/dist/core-tests.json` 和 `online-demo/dist/demo-tests.json`，本轮改动尚未同步到该演示。工程测试不等于医学准确性或真实学习效果验证。
+当前本地版运行 `python -m unittest discover -s mednexus/tests -q`，124项通过；`node --test mednexus/tests/*.test.mjs` 的41项流程回归通过。我的学习页可按本机导入的22章、233条大纲要求核对学习目标；补学按服务器错点逐项查依据，章节问答与文献漫游保留原知识点，并在确认可编辑检索式后查询、返回迁移练习。课程资料入口还支持55张组胚原图与207条待校对编号复习条目。完整测试范围与实际联网限制见 [验证记录](mednexus/验证记录.md)。`online-demo/` 是独立静态演示，本轮本地版改动尚未同步到该演示。工程测试不等于医学准确性或真实学习效果验证。
 
 ## 项目目录
 

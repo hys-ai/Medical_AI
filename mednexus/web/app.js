@@ -14,6 +14,8 @@ let dataResetting = false;
 let pmRequestId = 0;
 let readingRequestId = 0;
 let researchContext = null;
+let askOriginConcept = null;
+let answerOriginConcept = null;
 let learningPlanLoading = false;
 
 /* ---------- 基础工具 ---------- */
@@ -111,6 +113,7 @@ $$(".nav-item").forEach((b) => {
 });
 $$(".nav-item").forEach((b) => b.addEventListener("click", () => {
   if (b.dataset.view === "research") resetResearchContext();
+  if (b.dataset.view === "home") setAskContext(null);
   showView(b.dataset.view);
 }));
 $$("[data-view]").forEach((b) => {
@@ -383,6 +386,10 @@ function renderLearn(data) {
 }
 
 function renderCourse(data) {
+  if (typeof mountCourseCatalog === "function") mountCourseCatalog($("courseCatalog"), {
+    onAsk: (text) => { setAskContext(null); showView("home"); $("q").value = text; $("q").focus(); },
+    onStart: async () => { showView("quiz", { restoreTask: false }); await loadTask(data.recommendation?.id || "oculomotor", "auto"); }
+  });
   const box = $("coursePanel");
   box.innerHTML = "";
   const course = data.course;
@@ -399,7 +406,7 @@ function renderCourse(data) {
   const names = el("div");
   names.append(el("p", "study-label", "我的课程 / " + course.name),
     el("h2", null, course.chapter + " · 示例章节"),
-    el("p", "study-source", "评分目标仍为示例，待按已导入大纲逐项审核。完整要求请查看“课程资料与题库”。"));
+    el("p", "study-source", "本区提供 10 个脑神经知识点的诊断、补学与迁移练习。上方目录展示已导入大纲；评分目标仍待教师逐项审核。"));
   const stats = data.stats || {};
   heading.append(names, el("span", "pill", (stats.mastered || 0) + " / " + concepts.length + " 个已掌握"));
   box.appendChild(heading);
@@ -440,10 +447,9 @@ function renderCourse(data) {
       if (selectedCourseMode === "study") showStudyForResult({ concept: selected.id, score: 0, rubric: [] });
       else loadTask(selected.id, "auto");
     } else if (selectedCourseMode === "ask") {
-      showView("home"); $("q").value = selected.name; $("q").focus();
+      openConceptQuestion(selected.id, selected.name);
     } else {
-      resetResearchContext(); showView("research"); $("pmQ").value = selected.name; $("pmQ").focus();
-      $("pmStatus").textContent = "请填写这个主题下的具体疑问，再主动检索文献。";
+      openResearch(selected.name, selected.id);
     }
   });
   entry.append(modes, start);
@@ -585,7 +591,7 @@ $("clearLearning").addEventListener("click", async () => {
     localStorage.removeItem(quicknoteKey());
     localStorage.removeItem("mednexus-materials-" + learnerId());
     quicknoteProgress = {}; quizTask = null; quizConcept = null; quizPhase = "empty";
-    selectedCourseConcept = null; resetResearchContext();
+    selectedCourseConcept = null; resetResearchContext(); setAskContext(null); answerOriginConcept = null;
     $("result").hidden = true; $("q").value = "";
     $("dataStatus").textContent = scope === "all" ? "已清理学习记录和当前身份导入的索引。" : "已清理学习记录，导入索引已保留。";
     $("clearConfirmed").checked = false;
@@ -682,12 +688,35 @@ function renderPapers(container, papers, note, tagEl) {
   papers.forEach((p) => container.appendChild(paperCard(p)));
 }
 
-async function ask(question) {
+function setAskContext(concept) {
+  askOriginConcept = concept;
+  const banner = $("askContext");
+  banner.hidden = !concept;
+  banner.innerHTML = "";
+  if (!concept) return;
+  const name = overviewData?.concepts?.find((c) => c.id === concept)?.name || concept;
+  banner.appendChild(el("span", null, "当前学习：系统解剖学 / 脑神经 / " + name));
+  const back = el("button", "link", "返回知识点学习 ›");
+  back.type = "button";
+  back.addEventListener("click", () => { showView("quiz", { restoreTask: false }); loadTask(concept, "auto"); });
+  const clear = el("button", "link", "切换为独立提问");
+  clear.type = "button"; clear.addEventListener("click", () => setAskContext(null));
+  banner.append(back, clear);
+}
+
+function openConceptQuestion(concept, question) {
+  setAskContext(concept); showView("home"); $("q").value = question; $("q").focus();
+}
+
+async function ask(question, originConcept = null) {
   if (busy) return;
   const q = (question || "").trim();
   if (!q) { toast("先输入一个问题"); $("q").focus(); return; }
 
   busy = true;
+  setAskContext(originConcept);
+  answerOriginConcept = null;
+  $("wanderBtn").disabled = true;
   $("sendBtn").disabled = true;
   const result = $("result");
   result.hidden = false;
@@ -701,6 +730,7 @@ async function ask(question) {
 
   try {
     const data = await api("/api/ask", { question: q });
+    answerOriginConcept = originConcept;
     $("resultTitle").textContent = "关于「" + data.question + "」";
     renderBadges(data);
     const ans = $("answerText");
@@ -718,6 +748,7 @@ async function ask(question) {
     $("statMs").textContent = data._ms ?? "—";
     $("wanderPrompt").textContent = data.wander?.prompt || "要不要深入了解？进入文献漫游查找前沿研究。";
     $("wanderBtn").dataset.question = data.question || q;
+    $("wanderBtn").disabled = false;
     if (data.refused) toast("教材中没有找到可核对的依据，已拒答");
     refreshOverview();
   } catch (e) {
@@ -735,27 +766,57 @@ function resetResearchContext() {
   pmRequestId++; readingRequestId++;
   $("pmResults").innerHTML = ""; $("pmStatus").textContent = "";
   $("paperReading").hidden = true; $("researchReturn").hidden = true;
+  $("researchQueryEditor").hidden = true; $("pmQuery").value = "";
+  $("researchContextLabel").textContent = "";
 }
 
-async function pmSearch(q, originConcept = null) {
+function openResearch(question, concept = null) {
+  resetResearchContext();
+  wanderOriginConcept = concept;
+  researchContext = { question, concept };
+  $("pmQ").value = question;
+  showView("research"); $("pmQ").focus();
+  if (concept) {
+    const name = overviewData?.concepts?.find((c) => c.id === concept)?.name || concept;
+    $("researchContextLabel").textContent = "来自：系统解剖学 / 脑神经 / " + name;
+    $("researchReturn").hidden = false;
+    $("pmStatus").textContent = "请写下这个知识点的具体机制、差异或证据疑问。先判断问题并确认英文检索式，再查询文献。";
+  }
+}
+
+async function pmSearch(q, originConcept = null, editedQuery = null) {
   const query = (q || "").trim();
   if (!query) { toast("先输入一个疑问"); return; }
   const request = ++pmRequestId;
   readingRequestId++;
   wanderOriginConcept = originConcept;
   researchContext = { question: query, concept: originConcept };
-  $("pmStatus").textContent = "正在检索 PubMed 真实文献…";
+  $("pmStatus").textContent = originConcept && editedQuery === null ? "正在判断疑问与当前知识点的关联…" : "正在检索 PubMed 真实文献…";
   $("pmResults").innerHTML = "";
   $("paperReading").hidden = true;
-  $("researchReturn").hidden = true;
+  $("researchReturn").hidden = !originConcept;
+  $("researchQueryEditor").hidden = true;
   try {
-    const data = await api("/api/pubmed", { question: query, retmax: 6 });
+    if (originConcept && editedQuery === null) {
+      const gate = await api("/api/research", { concept: originConcept, question: query });
+      if (request !== pmRequestId) return;
+      $("pmStatus").textContent = gate.reason + (gate.eligible ? "\n" + gate.mapping : "\n建议先补学，再明确要比较的条件或证据。");
+      if (gate.eligible) {
+        $("pmQuery").value = gate.query;
+        $("researchQueryEditor").hidden = false;
+      }
+      return;
+    }
+    const payload = { question: query, retmax: 6 };
+    if (originConcept) { payload.concept = originConcept; payload.query = editedQuery; }
+    const data = await api("/api/pubmed", payload);
     if (request !== pmRequestId) return;
     $("pmStatus").textContent = data.note
       ? (data.mapping || "") + "\n检索式：" + data.note +
-        "\nPubMed 共 " + data.count + " 条匹配；下方按发表日期显示前 5 篇。摘要为原文节选，具体结论请打开原文核对。"
+        "\nPubMed 共 " + data.count + " 条匹配；下方按发表日期显示本次获取的文献。摘要为原文节选，具体结论请打开原文核对。"
       : "";
     renderPapers($("pmResults"), data.papers, data.note);
+    if (originConcept) { $("pmQuery").value = data.note; $("researchQueryEditor").hidden = false; }
     $("researchReturn").hidden = !wanderOriginConcept;
     if (!data.papers || !data.papers.length) {
       $("pmStatus").textContent = "没有取到文献：" + (data.note || "检索式为空");
@@ -763,6 +824,7 @@ async function pmSearch(q, originConcept = null) {
   } catch (e) {
     if (request !== pmRequestId) return;
     $("pmStatus").textContent = "检索失败：" + e.message;
+    if (originConcept && editedQuery !== null) $("researchQueryEditor").hidden = false;
     if (e.url) {
       const a = el("a", null, "在 PubMed 打开检索式 ↗");
       a.href = e.url;
@@ -797,6 +859,12 @@ async function loadPaperReading(paper) {
       "摘要未提供可直接提取的结果或结论段落。"));
     body.appendChild(el("p", "study-source", result.limitations));
     body.appendChild(el("p", "study-source", result.relationship));
+    if (result.ai_guide) {
+      body.appendChild(el("h4", null, "AI 辅助摘要解读（需对照原摘要核验）"));
+      [["question", "问题"], ["evidence", "证据"], ["limitations", "局限"], ["relationship", "与课程知识的关系"]].forEach(([key, label]) => {
+        body.appendChild(el("p", "study-source", label + "：" + (result.ai_guide[key] || "摘要未报告")));
+      });
+    }
     if (result.warning) body.appendChild(el("p", "study-source", result.warning));
   } catch (e) {
     if (request !== readingRequestId) return;
@@ -824,16 +892,14 @@ async function refreshOverview() {
 /* ---------- 事件绑定 ---------- */
 $("askForm").addEventListener("submit", (e) => {
   e.preventDefault();
-  ask($("q").value);
+  ask($("q").value, askOriginConcept);
 });
 
 $("wanderBtn").addEventListener("click", () => {
   const topic = $("wanderBtn").dataset.question || $("q").value.trim();
   if (!topic) return;
-  resetResearchContext();
-  $("pmQ").value = topic;
-  showView("research");
-  pmSearch(topic);
+  openResearch(topic, answerOriginConcept);
+  pmSearch(topic, answerOriginConcept);
 });
 
 $("returnTransfer").addEventListener("click", () => {
@@ -848,17 +914,26 @@ $$(".chip", $("chips")).forEach((c) => {
     const text = c.textContent.trim();
     if (text === "我有个问题想问…") { $("q").focus(); return; }
     $("q").value = text;
+    setAskContext(null);
     ask(text);
   });
 });
 
 $("pmForm").addEventListener("submit", (e) => {
   e.preventDefault();
-  pmSearch($("pmQ").value);
+  pmSearch($("pmQ").value, wanderOriginConcept);
+});
+$("runResearchQuery").addEventListener("click", () => pmSearch($("pmQ").value, wanderOriginConcept, $("pmQuery").value));
+$("pmQ").addEventListener("input", () => {
+  pmRequestId++; readingRequestId++;
+  $("researchQueryEditor").hidden = true; $("paperReading").hidden = true;
+  $("pmResults").innerHTML = "";
+  $("pmStatus").textContent = "疑问已修改，请重新提交。";
 });
 
 $$(".pm-chip").forEach((c) => {
   c.addEventListener("click", () => {
+    resetResearchContext();
     $("pmQ").value = c.textContent.trim();
     pmSearch($("pmQ").value);
   });
@@ -1110,6 +1185,10 @@ function renderQuizResult(r) {
     mountTutorChat(tutorBox, r.tutor_token);
   }
 
+  mountResearchBridge(area, r.concept);
+}
+
+function mountResearchBridge(container, concept) {
   const research = el("div", "research-bridge");
   research.appendChild(el("b", null, "这个知识点还有值得深挖的问题吗？"));
   const question = el("input");
@@ -1124,31 +1203,36 @@ function renderQuizResult(r) {
     const q = question.value.trim();
     if (!q) { toast("先写一个具体疑问"); question.focus(); return; }
     status.textContent = "正在判断…";
+    judge.disabled = true;
+    const old = research.querySelector(".research-enter");
+    if (old) old.remove();
     try {
-      const gate = await api("/api/research", { concept: r.concept, question: q });
+      const gate = await api("/api/research", { concept, question: q });
+      if (q !== question.value.trim()) return;
       status.textContent = gate.reason;
-      const old = research.querySelector(".research-enter");
-      if (old) old.remove();
       if (gate.eligible) {
-        const enter = el("button", "btn btn-primary research-enter", "进入文献漫游 →");
+        const enter = el("button", "btn btn-primary research-enter", "核对英文检索式 →");
         enter.addEventListener("click", () => {
-          wanderOriginConcept = r.concept;
-          $("pmQ").value = q;
-          showView("research");
-          pmSearch(q, r.concept);
+          openResearch(q, concept);
+          pmSearch(q, concept);
         });
         research.appendChild(enter);
       }
     } catch (e) {
       status.textContent = "判断失败：" + e.message;
-    }
+    } finally { judge.disabled = false; }
+  });
+  question.addEventListener("input", () => {
+    const old = research.querySelector(".research-enter");
+    if (old) old.remove();
+    status.textContent = "";
   });
   research.append(judge, status);
-  area.appendChild(research);
+  container.appendChild(research);
 }
 
 async function showStudyForResult(result) {
-  if (quizLoading || quizSubmitting) { toast("当前任务正在处理，请稍后再试"); return; }
+  if (quizLoading || quizSubmitting || quizHintLoading) { toast("当前任务正在处理，请稍后再试"); return; }
   quizLoading = true;
   const area = $("quizArea");
   quizPhase = "loading";
@@ -1156,27 +1240,39 @@ async function showStudyForResult(result) {
   try {
     const data = await api("/api/study", { concept: result.concept });
     quizPhase = "study";
+    quizConcept = data.concept; quizTask = null;
+    $("quizKind").textContent = data.study_mode === "targeted" ? "针对性补学" : "学习准备";
+    renderQuiz(overviewData);
     area.innerHTML = "";
-    area.appendChild(el("h3", null, "针对性补学 · " + data.name));
-    const missed = (result.rubric || []).filter((point) => !point.correct);
-    missed.forEach((point) => {
+    area.appendChild(el("h3", null, (data.study_mode === "targeted" ? "针对性补学 · " : "学习准备 · ") + data.name));
+    area.appendChild(el("p", "study-source", data.study_mode === "targeted" ?
+      "根据本知识点最近一次作答，只整理仍未掌握的要点。" : "尚无需要补齐的错点记录。先阅读学习卡，再通过独立作答检查掌握情况。"));
+    (data.focus || []).forEach((point) => {
       const row = el("div", "cite no");
       row.appendChild(el("div", null, point.label + "：" + point.reason + " 正确要点：" + point.expected));
+      (point.evidence || []).forEach((source) => row.appendChild(studyEvidence(source)));
+      if (!point.evidence?.length) row.appendChild(el("p", "study-source", "该要点尚无匹配的教材书页。下面的自编学习卡仅作教学示例。"));
       area.appendChild(row);
     });
     area.appendChild(el("p", "study-label", "自编学习卡（教学示例，待教师审核）"));
     area.appendChild(el("p", "answer", data.note));
-    const source = (data.local_sources || []).find((s) => s.page && s.book);
-    if (source) {
-      area.appendChild(el("p", "study-source", "教材定位：《" + source.book + "》" +
-        (source.chapter ? " · " + source.chapter : "") + " · 第 " + source.page + " 页（请对照原书核验）"));
-    } else {
+    if (data.study_mode !== "targeted") (data.local_sources || []).forEach((source) => area.appendChild(studyEvidence(source)));
+    if (!(data.local_sources || []).length) {
       area.appendChild(el("p", "study-source", "本知识点尚无可核对的教材页码；请结合课程教材核对学习卡。"));
     }
-    const retestKind = result.score === 0 ? "diagnostic" : "transfer";
-    const retest = el("button", "btn btn-primary", result.score === 0 ? "补完再测基础题" : "补完做迁移题");
-    retest.addEventListener("click", () => loadTask(result.concept, retestKind));
-    area.appendChild(retest);
+    if (/^https:\/\//.test(data.source?.url || "")) {
+      const reference = el("a", "study-source", "公开参考：" + data.source.title + " ↗（请核对原文，不是课程教材页码）");
+      reference.href = data.source.url; reference.target = "_blank"; reference.rel = "noopener";
+      area.appendChild(reference);
+    }
+    const actions = el("div", "quicknote-actions");
+    const retestKind = data.retest_kind === "transfer" ? "transfer" : "diagnostic";
+    const retest = el("button", "btn btn-primary", retestKind === "diagnostic" ? "补完再测基础题" : "补完做迁移题");
+    retest.addEventListener("click", () => loadTask(data.concept, retestKind));
+    const askMore = el("button", "btn", "围绕这个知识点查询教材");
+    askMore.addEventListener("click", () => openConceptQuestion(data.concept, data.name));
+    actions.append(retest, askMore); area.appendChild(actions);
+    mountResearchBridge(area, data.concept);
   } catch (e) {
     quizPhase = "result";
     area.textContent = "补学内容读取失败：" + e.message;
@@ -1184,6 +1280,16 @@ async function showStudyForResult(result) {
     retry.addEventListener("click", () => showStudyForResult(result));
     area.appendChild(retry);
   } finally { quizLoading = false; }
+}
+
+function studyEvidence(source) {
+  const box = el("div", "study-evidence");
+  const locator = "《" + source.book + "》" + (source.chapter ? " · " + source.chapter : "") +
+    (source.page ? " · 第 " + source.page + " 页" : " · 暂无教材页码");
+  box.appendChild(el("p", "study-source", locator + "（请对照原书核验）"));
+  if (source.evidence_type === "text" && source.excerpt) box.appendChild(el("p", "answer", "原文节选：" + source.excerpt));
+  box.appendChild(el("p", "study-source", source.evidence_notice || "导入来源尚需核对。"));
+  return box;
 }
 
 async function loadLearningReport() {

@@ -606,6 +606,12 @@ svg { width: 1.2em; height: 1.2em; fill: none; stroke: currentColor; stroke-widt
 .quicknote-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .quicknote-actions .btn:disabled { opacity: .5; cursor: not-allowed; }
 .quicknote-hint { margin: 14px 0 0; }
+.learning-context { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin: 16px 0; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--blue-soft); font-size: 13px; }
+.learning-context[hidden], .research-query-editor[hidden] { display: none; }
+.research-query-editor { margin: 16px 0; padding: 20px; }
+.research-query-editor label { display: block; font-weight: 600; margin-bottom: 10px; }
+.research-query-editor textarea { width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: var(--surface); font: inherit; resize: vertical; }
+.study-evidence { margin: 12px 0; padding: 12px; border-left: 3px solid var(--line); }
 @media (max-width: 720px) {
   .quicknote-panel { padding: 16px; }
   .quicknote-filters { grid-template-columns: 1fr; }

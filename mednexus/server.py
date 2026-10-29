@@ -383,6 +383,91 @@ def verify_citation(source, quote, sources):
     return bool(original and original["book"] == source["book"] and original.get("page") == source.get("page") and quote and quote in original.get("text", ""))
 
 
+def study_payload(db, learner, cid):
+    """Build remediation from the learner's saved assessment and scoped sources."""
+    c = CONCEPT_MAP[cid]
+    row = db.execute("SELECT score,payload FROM attempts WHERE learner=? AND concept=? ORDER BY id DESC LIMIT 1",
+                     (learner, cid)).fetchone()
+    last_result = json.loads(row["payload"]) if row else None
+    focus = [{k: p[k] for k in ("label", "reason", "expected")}
+             for p in (last_result or {}).get("rubric", []) if p.get("correct") is False]
+    study_mode = "targeted" if focus else "overview"
+
+    # Search this authorized candidate set directly. retrieve() can fall back to
+    # global textbook hits, which must not displace a learner's local evidence.
+    sources, seen = [], set()
+    for source in all_sources(db, learner):
+        page = source.get("page")
+        if (source.get("kind") not in ("local", "metadata", "textbook")
+                or type(page) is not int or page < 1 or not source.get("book") or not source.get("id")):
+            continue
+        identity = (source["id"], source["book"], page, source["kind"])
+        if identity in seen:
+            continue
+        seen.add(identity)
+        source = dict(source)
+        # A locator without supplied source text is never treated as a quotation.
+        if source["kind"] == "metadata":
+            source["text"] = ""
+        blob = " ".join((source.get("chapter", ""), source.get("text", ""),
+                         " ".join(source.get("keywords", []))))
+        if not any(term.lower() in blob.lower() for term in c["terms"]):
+            continue
+        sources.append((source, tokenize(blob)))
+
+    def matches(query):
+        terms = tokenize(query)
+        if not terms:
+            return []
+        weights = {t: math.log(1 + (len(sources) + 1) / (1 + sum(t in dt for _, dt in sources))) for t in terms}
+        total = sum(weights.values()) or 1
+        ranked = []
+        for source, tokens in sources:
+            overlap = terms & tokens
+            coverage = sum(weights[t] for t in overlap) / total
+            explicit = any(term.lower() in query.lower() for term in source.get("keywords", []) if len(term) > 2)
+            if coverage >= .33 and (len(overlap) >= 2 or explicit):
+                ranked.append((coverage, source))
+        return sorted(ranked, key=lambda item: item[0], reverse=True)[:3]
+
+    def evidence_for(queries):
+        candidates = {}
+        for query in queries:
+            for score, source in matches(query):
+                identity = (source["id"], source["book"], source["page"], source["kind"])
+                if identity not in candidates or score > candidates[identity][0]:
+                    candidates[identity] = (score, source)
+        evidence = []
+        terms = tokenize(" ".join(queries))
+        for _, source in sorted(candidates.values(), key=lambda item: item[0], reverse=True)[:3]:
+            text = source.get("text", "")
+            sentences = list(re.finditer(r"[^。！？；;\n]+[。！？；;]?", text))
+            best = max(sentences, key=lambda m: len(terms & tokenize(m.group())), default=None)
+            # Keep an exact contiguous excerpt, including original punctuation.
+            excerpt = best.group()[:600] if best else ""
+            evidence.append({**source, "excerpt": excerpt,
+                             "evidence_type": "text" if excerpt else "locator",
+                             "evidence_notice": "相关原文摘录；是否支持该要点仍需对照原书核验" if excerpt else
+                             "仅作书页定位，未提供可核对原文，不能作为解释依据"})
+        return evidence
+
+    local_sources = []
+    for point in focus:
+        point["evidence"] = evidence_for([point["label"], point["expected"], point["reason"]])
+        local_sources.extend(point["evidence"])
+    if not focus:
+        local_sources = evidence_for([c["name"]] + c["terms"])
+    unique = {(s["id"], s["book"], s["page"], s["kind"]): s for s in local_sources}
+    state = state_get(db, learner)
+    state["concept"] = cid
+    state_save(db, learner, state)
+    event(db, learner, "study", cid, {"study_mode": study_mode, "focus": [p["label"] for p in focus]})
+    return {"concept": c["id"], "name": c["name"], "note": c["note"], "source": SOURCES[c["source"]],
+            "goals": COURSE["goal_source"], "local_sources": list(unique.values()), "last_result": last_result,
+            "focus": focus, "study_mode": study_mode,
+            "retest_kind": "diagnostic" if not row or row["score"] == 0 else "transfer"}
+
+
 def model_json(system, payload):
     if not API_KEY:
         return None
@@ -787,13 +872,18 @@ def ask_compat(db, learner, body):
             "wander": {"question": question, "prompt": "要不要深入了解？进入文献漫游查找前沿研究。"}}
 
 
+def _check_research_privacy(text):
+    if re.search(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}|(?<!\d)1[3-9]\d{9}(?!\d)|(?<!\d)\d{17}[0-9x](?!\d)", text, re.I) or re.search(
+            r"(?:患者姓名|姓名|住址|病历号|住院号)\s*[:：]|(?:patient name|medical record(?: number)?|home address)\s*:", text, re.I):
+        raise InputError("检索词疑似包含个人联系方式、身份或病历信息；请改用匿名的医学主题")
+
+
 def research_query_for(question):
     """明确映射已支持的中文主题；绝不套用无关知识点的检索式。"""
     q = question.strip().lower()
     if not q or len(q) > 300:
         raise InputError("请输入 1–300 字的研究主题")
-    if re.search(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}|(?<!\d)1[3-9]\d{9}(?!\d)|(?<!\d)\d{17}[0-9x](?!\d)", q):
-        raise InputError("检索词疑似包含个人联系方式或证件号；请改用匿名的医学主题")
+    _check_research_privacy(q)
     if re.fullmatch(r"[\x20-\x7e]+", q) and re.search(r"[a-z]{3}", q):
         return question.strip(), "直接使用输入的英文 PubMed 检索式"
     if "小胶质细胞" in q:
@@ -813,14 +903,50 @@ def research_query_for(question):
     raise InputError("目前没有这个中文主题的英文检索模板。请在漫游页输入英文关键词或 PubMed 检索式。")
 
 
-def pubmed_compat(db, learner, body):
-    """只在用户主动请求后查询 PubMed；返回真实 PMID 与摘要。"""
+def research_request(body):
+    """Keep the original gated question, selected concept and actual query together."""
     question = str(body.get("question") or "").strip()
-    query, mapping = research_query_for(question)
-    out = pubmed(query, sort="pub date")
-    event(db, learner, "literature", "", {"question": question, "query": query,
+    cid = body.get("concept")
+    if cid is None:
+        query, mapping = research_query_for(question)
+        return {"concept": "", "question": question, "query": query, "mapping": mapping}
+    if not isinstance(cid, str) or cid not in CONCEPT_MAP:
+        raise InputError("未知知识点")
+    if not 1 <= len(question) <= 300:
+        raise InputError("请输入 1–300 字的研究疑问")
+    _check_research_privacy(question)
+    concept = CONCEPT_MAP[cid]
+    gate = research_gate(concept, question)
+    if not gate["eligible"]:
+        raise InputError("请先明确与当前知识点有关的开放性研究疑问")
+    query = gate["query"]
+    mapping = gate["mapping"]
+    if body.get("query") is not None:
+        if not isinstance(body["query"], str):
+            raise InputError("请使用 3–1500 字符的英文检索式")
+        query = body["query"].strip()
+        if not 3 <= len(query) <= 1500 or not re.fullmatch(r"[\x20-\x7e]+", body["query"]) or not re.search(r"[a-zA-Z]{3}", query):
+            raise InputError("请使用 3–1500 字符的英文检索式")
+        _check_research_privacy(query)
+        # Only use terms already present in the authored concept/template. This
+        # does not infer a different topic from ambiguous words in the question.
+        core_terms = [term for term in concept["terms"] if re.fullmatch(r"[a-zA-Z ]+", term)]
+        subject = re.split(r"\bAND\b", concept["query"], maxsplit=1, flags=re.I)[0]
+        subject = re.sub(r"\[[^\]]*\]", "", subject)
+        core_terms.extend(term.strip(' ()\"') for term in re.split(r"\bOR\b", subject, flags=re.I))
+        if not any(term and re.search(r"(?<![a-z])" + re.escape(term) + r"(?![a-z])", query, re.I) for term in core_terms):
+            raise InputError("检索式需保留当前知识点的英文核心词，请核对研究疑问与检索式的对应关系")
+        mapping = "用户确认的英文检索式；已保留当前知识点核心词，相关性仍需人工评估"
+    return {"concept": cid, "question": question, "query": query, "mapping": mapping}
+
+
+def pubmed_compat(db, learner, body, request=None):
+    """只在用户主动请求后查询 PubMed；返回真实 PMID 与摘要。"""
+    request = research_request(body) if request is None else request
+    out = pubmed(request["query"], sort="pub date")
+    event(db, learner, "literature", request["concept"], {"question": request["question"], "query": request["query"],
           "pmids": [p["pmid"] for p in out["papers"]]})
-    return {"papers": out["papers"], "note": query, "mapping": mapping,
+    return {**request, "papers": out["papers"], "note": request["query"],
             "count": out["count"], "fetched_at": out["fetched_at"], "cached": out["cached"]}
 
 
@@ -981,19 +1107,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send({"error": str(error)}, 409)
             if path == "/api/pubmed":
                 _t0 = time.time()
+                research = research_request(body)
                 try:
                     with connect() as db:
-                        out = pubmed_compat(db, learner, body)
+                        out = pubmed_compat(db, learner, body, request=research)
                 except InputError:
                     raise
                 except Exception:
-                    question = str(body.get("question") or "").strip()
-                    try:
-                        query, _ = research_query_for(question)
-                    except InputError:
-                        query = question
-                    return self.send({"error": "PubMed 当前连接失败，未返回任何虚构文献。可稍后重试或直接打开 PubMed。",
-                                      "url": "https://pubmed.ncbi.nlm.nih.gov/?term=" + urllib.parse.quote(query)}, 502)
+                    return self.send({**research, "note": research["query"],
+                                      "error": "PubMed 当前连接失败，未返回任何虚构文献。可稍后重试或直接打开 PubMed。",
+                                      "url": "https://pubmed.ncbi.nlm.nih.gov/?term=" + urllib.parse.quote(research["query"])}, 502)
                 out["_ms"] = int((time.time() - _t0) * 1000)
                 return self.send(out)
             if path == "/api/ask" and ("question" in body and "query" not in body):
@@ -1004,25 +1127,19 @@ class Handler(BaseHTTPRequestHandler):
                 out["_ms"] = int((time.time() - _t0) * 1000)
                 return self.send(out)
             if path == "/api/literature":
-                cid = body.get("concept")
-                if cid not in CONCEPT_MAP:
+                if body.get("concept") is None:
                     raise InputError("未知知识点")
-                query = str(body.get("query", "")).strip()
-                if not 3 <= len(query) <= 1500 or not re.search(r"[a-zA-Z]{3}", query):
-                    raise InputError("请使用 3–1500 字符的英文检索式")
-                with connect() as db:
-                    gate = research_gate(CONCEPT_MAP[cid], str(body.get("question", "")))
-                    if not gate["eligible"]:
-                        raise InputError("请先明确与当前知识点有关的开放性研究疑问")
+                research = research_request({**body, "query": body.get("query", "")})
+                cid, query = research["concept"], research["query"]
                 try:
                     out = pubmed(query)
                 except InputError:
                     raise
                 except Exception:
-                    return self.send({"error": "PubMed 当前连接失败，未返回任何虚构文献。检索式已保留，可重试或在 PubMed 打开。", "url": "https://pubmed.ncbi.nlm.nih.gov/?term=" + urllib.parse.quote(query)}, 502)
+                    return self.send({**research, "note": query, "error": "PubMed 当前连接失败，未返回任何虚构文献。检索式已保留，可重试或在 PubMed 打开。", "url": "https://pubmed.ncbi.nlm.nih.gov/?term=" + urllib.parse.quote(query)}, 502)
                 with connect() as db:
-                    event(db, learner, "literature", cid, {"query": query, "pmids": [p["pmid"] for p in out["papers"]]})
-                return self.send(out)
+                    event(db, learner, "literature", cid, {"question": research["question"], "query": query, "pmids": [p["pmid"] for p in out["papers"]]})
+                return self.send({**out, **research, "note": query})
             # Network-based explanation can take time: do not hold the state lock.
             if path == "/api/ask":
                 with connect() as db:
@@ -1032,6 +1149,11 @@ class Handler(BaseHTTPRequestHandler):
                 cid, pmid = body.get("concept"), str(body.get("pmid", ""))
                 if cid not in CONCEPT_MAP or not re.fullmatch(r"\d{1,12}", pmid):
                     raise InputError("未知知识点或无效 PMID")
+                learning_question = body.get("question", CONCEPT_MAP[cid]["research"])
+                if not isinstance(learning_question, str) or not 1 <= len(learning_question.strip()) <= 300:
+                    raise InputError("请输入 1–300 字的研究疑问")
+                learning_question = learning_question.strip()
+                _check_research_privacy(learning_question)
                 with connect() as db:
                     cache = [json.loads(r[0]) for r in db.execute("SELECT payload FROM cache")]
                     paper = next((p for batch in cache for p in batch.get("papers", []) if p["pmid"] == pmid), None)
@@ -1039,7 +1161,6 @@ class Handler(BaseHTTPRequestHandler):
                         raise InputError("请先检索并选择真实文献")
                     event(db, learner, "read-paper", cid, {"pmid": pmid})
                 paragraphs = paper["abstract"]
-                learning_question = str(body.get("question", "")).strip()[:1000] or CONCEPT_MAP[cid]["research"]
                 out = {"paper": paper, "concept": cid, "mode": "摘要阅读框架 · 未自动推断研究结论", "question": learning_question,
                        "evidence": [a for a in paragraphs if any(t in a["label"].lower() for t in ("result", "conclusion", "finding"))],
                        "limitations": "请核对人群、设计、样本量和结局。文献类型不等于证据质量；摘要未报告的局限不能当作不存在。", "relationship": "这篇文献是对当前知识疑问的候选补充证据。是否支持、补充或与课程知识有分歧，需阅读内容后判断。"}
@@ -1062,12 +1183,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif path == "/api/hint":
                     out = request_hint(db, learner, body)
                 elif path == "/api/study":
-                    c = CONCEPT_MAP[cid]
-                    event(db, learner, "study", cid)
-                    state = state_get(db, learner)
-                    state["concept"] = cid
-                    state_save(db, learner, state)
-                    out = {"concept": c["id"], "name": c["name"], "note": c["note"], "source": SOURCES[c["source"]], "goals": COURSE["goal_source"], "local_sources": [s for s in retrieve(c["name"], all_sources(db, learner)) if s["kind"] != "note"], "last_result": state.get("last_result") if state.get("last_result", {}).get("concept") == cid else None}
+                    out = study_payload(db, learner, cid)
                 elif path == "/api/research":
                     out = research_gate(CONCEPT_MAP[cid], str(body.get("question", "")))
                     event(db, learner, "research-gate", cid, out)

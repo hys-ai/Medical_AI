@@ -8,6 +8,7 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%233b6ef6'/%3E%3Ctext x='16' y='22' font-size='16' text-anchor='middle' fill='white' font-family='sans-serif'%3E页%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="tutor-chat.css">
+<link rel="stylesheet" href="course-catalog.css">
 </head>
 <body>
 <svg class="sprite" aria-hidden="true">
@@ -99,6 +100,7 @@
       </div>
       <p class="privacy-note">教学演示用途。请勿输入患者资料、个人信息或校内未授权数据；回答不能替代临床判断。</p>
 
+      <div id="askContext" class="learning-context" hidden></div>
       <div id="result" class="result" hidden>
         <div class="result-head">
           <h2 id="resultTitle">结果</h2>
@@ -166,6 +168,7 @@
     <section class="view" id="view-learn">
       <h1 class="page-title">我的学习</h1>
       <p class="page-sub">按课程和章节进入学习，根据作答证据选择下一步。当前开放脑神经示例章节，内容与目标待教师审核。</p>
+      <article class="panel" id="courseCatalog" aria-live="polite"></article>
       <article class="panel course-panel" id="coursePanel" aria-live="polite">正在读取课程与学习进度…</article>
       <h2 class="section-title">提问记录</h2>
       <div class="metric-row" id="metrics"></div>
@@ -253,9 +256,16 @@
       <p class="privacy-note">请勿输入个人或患者信息。文献标题和摘要来自第三方，摘要权利可能属于作者或出版社；这里只展示简短预览，请通过 PubMed 链接核对原文。NCBI 不为本项目背书。</p>
       <form class="askbar small" id="pmForm">
         <div class="askbar-icon"><svg><use href="#i-flask"></use></svg></div>
-        <input id="pmQ" type="text" maxlength="300" placeholder="例如：肠道菌群如何影响免疫治疗的疗效？">
-        <button class="send" type="submit"><svg><use href="#i-search"></use></svg></button>
+        <input id="pmQ" type="text" maxlength="300" aria-label="研究疑问" placeholder="写下具体疑问，或输入英文 PubMed 检索式">
+        <button class="send" type="submit" aria-label="判断问题或检索文献"><svg><use href="#i-search"></use></svg></button>
       </form>
+      <p id="researchContextLabel" class="study-label"></p>
+      <div id="researchQueryEditor" class="panel research-query-editor" hidden>
+        <label for="pmQuery">确认英文检索式（可编辑）</label>
+        <textarea id="pmQuery" rows="3" maxlength="1500"></textarea>
+        <p class="study-source">此模板来自当前知识点，尚未逐句翻译你的疑问。请核对英文主题与研究条件；只有点击下方按钮才会向 PubMed 发送检索词。</p>
+        <button id="runResearchQuery" class="btn btn-primary" type="button">使用此检索式查询文献 →</button>
+      </div>
       <div class="chips">
         <span class="chip-label">例如：</span>
         <button class="chip pm-chip">小胶质细胞的功能</button>
@@ -340,6 +350,7 @@
 
 <div class="toast" id="toast"></div>
 <script src="tutor-chat.js"></script>
+<script src="course-catalog.js"></script>
 <script src="app.js"></script>
 <script src="materials.js"></script>
 </body>
