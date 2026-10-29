@@ -21,18 +21,28 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from datetime import datetime
 
 from knowledge import CONCEPTS, CONCEPT_MAP, QUESTION_MAP, SOURCES, COURSE
 import textbook
+import materials
+from tutoring import hint_text
+from planning import build_plan, SHANGHAI
+import tutor_chat
+import tutor_model
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("MEDNEXUS_DB", str(ROOT / "data" / "learning.sqlite3")))
+QUICK_NOTES_PATH = ROOT / "data" / "quick_notes_cards.json"
+QUICK_NOTES_SOURCE = ROOT / "data" / "quick_notes_source.pdf"
 LOCK = threading.RLock()
 NCBI_LOCK = threading.Lock()
 NCBI_LAST = 0.0
+TUTOR_LOCKS = [threading.Lock() for _ in range(64)]
 API_KEY = os.environ.get("MEDNEXUS_API_KEY", "")
 MODEL = os.environ.get("MEDNEXUS_MODEL", "deepseek-chat")
 BASE_URL = os.environ.get("MEDNEXUS_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
+NCBI_EMAIL = os.environ.get("MEDNEXUS_NCBI_EMAIL", "").strip()
 
 # 书页 UI 不带身份头时使用的本机默认身份（本机单人使用）
 DEFAULT_LEARNER = hashlib.sha256(b"mednexus-local").hexdigest()[:48]
@@ -83,6 +93,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, learner TEXT, kind TEXT, concept TEXT, payload TEXT, created REAL);
         CREATE TABLE IF NOT EXISTS sources(learner TEXT, id TEXT, payload TEXT, PRIMARY KEY(learner,id));
         CREATE TABLE IF NOT EXISTS cache(key TEXT PRIMARY KEY, payload TEXT, created REAL);
+        CREATE TABLE IF NOT EXISTS tutor_conversations(learner TEXT, token TEXT, payload TEXT NOT NULL,
+          PRIMARY KEY(learner,token));
         """)
 
 
@@ -115,15 +127,17 @@ def progress(db, learner):
         latest = {}
         for a in rows:
             latest[a["question"]] = a
-        passed = [a for a in latest.values() if a["score"] >= .8]
+        independent = lambda a: not json.loads(a["payload"]).get("assisted", False)
+        passed = [a for a in latest.values() if a["score"] >= .8 and independent(a)]
         mastered = (len(passed) >= 2 and any(a["kind"] == "transfer" for a in passed)
-                    and len(rows) >= 2 and all(a["score"] >= .8 for a in rows[-2:]) and ema >= .8)
+                    and len(rows) >= 2 and all(a["score"] >= .8 and independent(a) for a in rows[-2:]) and ema >= .8)
         status = "已掌握" if mastered else ("初步达标" if rows and rows[-1]["score"] >= .8 else ("需巩固" if rows else "未测评"))
         items.append({**{k: c[k] for k in ("id", "name", "unit", "level")}, "status": status, "score": round(ema * 100) if ema is not None else None,
                       "attempts": len(rows), "distinct": len(latest), "viewed": c["id"] in views,
                       "pre": round(rows[0]["score"] * 100) if rows else None,
                       "post": round(rows[-1]["score"] * 100) if len(rows) > 1 else None,
-                      "last_score": rows[-1]["score"] if rows else None})
+                      "last_score": rows[-1]["score"] if rows else None,
+                      "last_assisted": not independent(rows[-1]) if rows else False})
     return items
 
 
@@ -142,7 +156,105 @@ def public_active(active):
         return None
     c, q = QUESTION_MAP[active["question"]]
     return {"token": active["token"], "concept": c["id"], "kind": q["kind"], "prompt": q["prompt"],
-            "points": [{"label": p["label"], "options": opts} for p, opts in zip(q["points"], active["options"])]}
+            "points": [{"label": p["label"], "options": opts,
+                        "hints": [hint_text(q, i, step) for step in range(1, active.get("hints", {}).get(str(i), 0) + 1)]}
+                       for i, (p, opts) in enumerate(zip(q["points"], active["options"]))]}
+
+
+def request_hint(db, learner, body):
+    state = state_get(db, learner)
+    active = state.get('active')
+    if not active or active['token'] != body.get('token'):
+        raise InputError('这道题已切换，请回到当前学习任务')
+    index, level = body.get('point'), body.get('level')
+    if type(index) is not int or not 0 <= index < 3 or type(level) is not int or level not in (1, 2):
+        raise InputError('请选择有效的要点与提示步骤')
+    _, question = QUESTION_MAP[active['question']]
+    hints = active.setdefault('hints', {})
+    previous = hints.get(str(index), 0)
+    if level > previous + 1:
+        raise InputError('请先查看第一步思路提示')
+    if level > previous:
+        hints[str(index)] = level
+        state_save(db, learner, state)
+        event(db, learner, 'hint', active['concept'], {'point': index, 'level': level})
+    return {'point': index, 'level': level, 'text': hint_text(question, index, level),
+            'notice': '提示只提供分析思路；本次作答计为辅助练习，不能作为独立掌握证据。'}
+
+
+def tutor_context(db, learner, token):
+    if not isinstance(token, str) or not re.fullmatch(r'[a-f0-9]{32}', token):
+        raise InputError('请选择当前练习后再开始教学对话')
+    state = state_get(db, learner)
+    active = state.get('active')
+    if active and active['token'] == token:
+        c, q = QUESTION_MAP[active['question']]
+        return c, q, False
+    attempt = db.execute('SELECT question FROM attempts WHERE learner=? AND token=?', (learner, token)).fetchone()
+    if attempt:
+        c, q = QUESTION_MAP[attempt['question']]
+        return c, q, True
+    raise InputError('这道题已切换或记录已清理，请打开当前练习')
+
+
+def tutor_messages(db, learner, token):
+    row = db.execute('SELECT payload FROM tutor_conversations WHERE learner=? AND token=?', (learner, token)).fetchone()
+    return json.loads(row[0]) if row else []
+
+
+def tutor_snapshot(db, learner, token, provider=None):
+    c, _, completed = tutor_context(db, learner, token)
+    messages = tutor_messages(db, learner, token)
+    return {'token': token, 'concept': c['id'], 'name': c['name'], 'completed': completed,
+            'messages': messages, 'remaining': max(0, 12 - len(messages)//2),
+            'provider': provider or tutor_model.status()}
+
+
+def tutor_turn(learner, body):
+    token, message, request_id = body.get('token'), body.get('message'), body.get('request_id')
+    if not isinstance(message, str) or not 2 <= len(message.strip()) <= 1000:
+        raise InputError('请输入2–1000字的想法或疑问')
+    if not isinstance(request_id, str) or not re.fullmatch(r'[a-f0-9]{32}', request_id):
+        raise InputError('对话请求编号无效，请刷新重试')
+    if not isinstance(token, str) or not re.fullmatch(r'[a-f0-9]{32}', token):
+        raise InputError('请选择当前练习后再开始教学对话')
+    message = message.strip()
+    # Network generation never holds the global learning/SQLite lock. A bounded
+    # striped lock serializes a session and makes uncertain client retries safe.
+    index = int(hashlib.sha256((learner + token).encode()).hexdigest()[:8], 16) % len(TUTOR_LOCKS)
+    with TUTOR_LOCKS[index]:
+        with LOCK, connect() as db:
+            c, q, completed = tutor_context(db, learner, token)
+            messages = tutor_messages(db, learner, token)
+            prior = next((m for m in messages if m.get('request_id') == request_id), None)
+            if prior:
+                if prior['content'] != message:
+                    raise InputError('同一请求编号不能用于不同问题')
+                return tutor_snapshot(db, learner, token)
+            if len(messages) >= 24:
+                raise InputError('本题已完成12轮对话，请独立复测或开启下一题')
+            if not completed:
+                state = state_get(db, learner)
+                state['active']['tutor_assisted'] = True
+                state_save(db, learner, state)
+        history = [{'role': m['role'], 'content': m['content']} for m in messages]
+        history.append({'role': 'user', 'content': message})
+        generated = tutor_chat.reply(c, q, history, completed=completed, generate=tutor_model.generator())
+        source = SOURCES[c['source']]
+        citations = [{**s, 'title': 'MedNexus 自编学习卡 · ' + c['name'],
+                      'url': source['url'], 'provenance': '自编教学摘要，非教材原文；无可核对书页'}
+                     for s in generated.get('sources', [])]
+        answer = {'role': 'assistant', 'content': generated['message'], 'follow_up': generated['follow_up'],
+                  'mode': generated['mode'], 'sources': citations, 'warning': generated.get('warning', '')}
+        with LOCK, connect() as db:
+            # Recheck after generation: reset or a switched, unsubmitted task must
+            # not be recreated by a late response.
+            tutor_context(db, learner, token)
+            messages.extend([{'role': 'user', 'content': message, 'request_id': request_id}, answer])
+            db.execute('INSERT OR REPLACE INTO tutor_conversations VALUES(?,?,?)',
+                       (learner, token, json.dumps(messages, ensure_ascii=False)))
+            event(db, learner, 'tutor-turn', c['id'], {'mode': generated['mode']})
+            return tutor_snapshot(db, learner, token)
 
 
 def make_task(db, learner, cid, kind="auto"):
@@ -156,7 +268,7 @@ def make_task(db, learner, cid, kind="auto"):
     if kind not in ("auto", "diagnostic", "transfer"):
         raise InputError("未知测试模式")
     if kind == "auto":
-        kind = "transfer" if rows and (rows[-1]["kind"] == "diagnostic" or rows[-1]["score"] < .8) else "diagnostic"
+        kind = "transfer" if rows and rows[-1]["kind"] == "diagnostic" and rows[-1]["score"] >= .8 else "diagnostic"
     q = next(q for q in c["questions"] if q["kind"] == kind)
     options = []
     for p in q["points"]:
@@ -200,6 +312,12 @@ def grade(db, learner, body):
               "action": action, "label": label, "why": why, "confidence": confidence,
               "calibration": "信心与表现有差异，建议回看推理依据。" if confidence == "很有把握" and score < .8 else "",
               "reasoning": str(body.get("reasoning", ""))[:3000], "grading": "结构化要点评分；补充推理仅记录，未自动评分"}
+    result['hinted_points'] = sorted(int(i) for i in active.get('hints', {}))
+    result['tutor_token'] = token
+    result['dialogue_assisted'] = bool(active.get('tutor_assisted'))
+    result['assisted'] = bool(result['hinted_points']) or result['dialogue_assisted']
+    if result['assisted']:
+        result['why'] += ' 本次使用过提示或教学对话，分数属于辅助练习；请再独立作答验证掌握。'
     db.execute("INSERT INTO attempts(learner,token,concept,question,kind,score,payload,created) VALUES(?,?,?,?,?,?,?,?)", (learner, token, c["id"], q["id"], q["kind"], score, json.dumps(result, ensure_ascii=False), time.time()))
     state.update(active=None, last_result=result)
     state_save(db, learner, state)
@@ -332,6 +450,8 @@ def research_gate(c, question, force=False):
 def ncbi_get(endpoint, params):
     global NCBI_LAST
     params = {**params, "tool": "MedNexusLearning"}
+    if NCBI_EMAIL and re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", NCBI_EMAIL):
+        params["email"] = NCBI_EMAIL
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/" + endpoint + "?" + urllib.parse.urlencode(params)
     with NCBI_LOCK:
         time.sleep(max(0, .38 - (time.monotonic() - NCBI_LAST)))
@@ -376,13 +496,13 @@ def xmltext(node):
     return "".join(node.itertext()).strip() if node is not None else ""
 
 
-def pubmed(query):
-    key = hashlib.sha256(query.encode()).hexdigest()
+def pubmed(query, sort="relevance"):
+    key = hashlib.sha256((sort + "\n" + query).encode()).hexdigest()
     with connect() as db:
         row = db.execute("SELECT payload,created FROM cache WHERE key=?", (key,)).fetchone()
     if row and time.time() - row["created"] < 86400:
         return {**json.loads(row["payload"]), "cached": True}
-    result = json.loads(ncbi_get("esearch.fcgi", {"db": "pubmed", "term": query, "retmode": "json", "retmax": 5, "sort": "relevance"}))
+    result = json.loads(ncbi_get("esearch.fcgi", {"db": "pubmed", "term": query, "retmode": "json", "retmax": 20, "sort": sort}))
     search = result.get("esearchresult", {})
     if "ERROR" in result or search.get("errorlist"):
         raise InputError("PubMed 未能识别该检索式，请核对拼写或字段")
@@ -399,7 +519,13 @@ def pubmed(query):
             abstract = [{"label": a.get("Label", ""), "text": xmltext(a)} for a in article.findall("Abstract/AbstractText")]
             authors = [" ".join(filter(None, [xmltext(a.find("LastName")), xmltext(a.find("Initials"))])) or xmltext(a.find("CollectiveName")) for a in article.findall("AuthorList/Author")]
             doi = next((xmltext(n) for n in node.findall("PubmedData/ArticleIdList/ArticleId") if n.get("IdType") == "doi"), "")
-            papers.append({"pmid": pmid, "title": xmltext(article.find("ArticleTitle")), "journal": xmltext(article.find("Journal/Title")), "year": xmltext(article.find("Journal/JournalIssue/PubDate/Year")) or xmltext(article.find("Journal/JournalIssue/PubDate/MedlineDate")), "authors": authors[:8], "types": types, "evidence": label, "abstract": abstract, "url": "https://pubmed.ncbi.nlm.nih.gov/" + pmid + "/", "doi": "https://doi.org/" + urllib.parse.quote(doi, safe="/") if doi else ""})
+            year = xmltext(article.find("Journal/JournalIssue/PubDate/Year")) or xmltext(article.find("Journal/JournalIssue/PubDate/MedlineDate"))
+            year_match = re.search(r"\b(?:19|20)\d{2}\b", year)
+            if year_match and int(year_match.group()) > time.gmtime().tm_year:
+                continue  # 预发表条目的未来卷期不放入“当前前沿”列表
+            papers.append({"pmid": pmid, "title": xmltext(article.find("ArticleTitle")), "journal": xmltext(article.find("Journal/Title")), "year": year, "authors": authors[:8], "types": types, "evidence": label, "abstract": abstract, "url": "https://pubmed.ncbi.nlm.nih.gov/" + pmid + "/", "doi": "https://doi.org/" + urllib.parse.quote(doi, safe="/") if doi else ""})
+            if len(papers) >= 5:
+                break
     out = {"papers": papers, "count": int(search.get("count", 0)), "translation": search.get("querytranslation", query), "query": query, "cached": False, "fetched_at": time.time()}
     with connect() as db:
         db.execute("INSERT OR REPLACE INTO cache VALUES(?,?,?)", (key, json.dumps(out, ensure_ascii=False), time.time()))
@@ -417,8 +543,8 @@ def import_sources(db, learner, records):
         if type(page) is not int or not 1 <= page <= 100000:
             raise InputError(f"第 {i+1} 条 page 必须是正整数印刷页码")
         text = str(s.get("text", ""))
-        if len(text) > 15000:
-            raise InputError(f"第 {i+1} 条文本过长，请拆成段落")
+        if len(text) > 2000:
+            raise InputError(f"第 {i+1} 条文本超过 2000 字；请只保留有权使用的短段落")
         url = str(s.get("url", ""))
         if url and urllib.parse.urlparse(url).scheme != "https":
             raise InputError("来源链接只支持 https")
@@ -456,17 +582,60 @@ def report(db, learner):
                 errors[p["category"]] += 1
     events = [dict(r) for r in db.execute("SELECT kind,concept,payload,created FROM events WHERE learner=? ORDER BY id DESC LIMIT 50", (learner,))]
     return {**snap, "errors": dict(errors), "history": [{"id": a["id"], "concept": a["concept"], "kind": a["kind"], "score": round(a["score"] * 100), "created": a["created"], "result": json.loads(a["payload"])} for a in rows], "events": events,
-            "method": "要点等权计分；EMA=0.4×旧值+0.6×本次得分（首次为本次值）。掌握需两个不同题目均达标、包含迁移题、最近两次均≥80%且EMA≥80%。看过不算掌握；此规则是原型设计，未作学习效果验证。"}
+            "method": "要点等权计分；EMA=0.4×旧值+0.6×本次得分（首次为本次值）。掌握需两个不同题目独立达标、包含迁移题、最近两次均独立≥80%且EMA≥80%。提示作答属于辅助练习，看过不算掌握；此规则是原型设计，未作学习效果验证。"}
+
+
+def export_learning(db, learner):
+    """Export an allowlisted learning summary, never the live state or sources."""
+    current = report(db, learner)
+    summary = {key: current[key] for key in
+               ("course", "concepts", "stats", "recommendation", "errors", "method")}
+    summary["history"] = []
+    for attempt in current["history"]:
+        result = attempt["result"]
+        summary["history"].append({
+            **{key: attempt[key] for key in ("concept", "kind", "score", "created")},
+            "question": result["question"], "confidence": result["confidence"],
+            "assisted": result.get("assisted", False), "hinted_points": result.get("hinted_points", []),
+            "dialogue_assisted": result.get("dialogue_assisted", False),
+            "rubric": [{key: point[key] for key in
+                        ("label", "selected", "correct", "expected", "reason", "category")}
+                       for point in result["rubric"]],
+        })
+    return {"version": 2, "scope": "learning_summary", "exported_at": time.time(),
+            "excluded": ["身份标识与任务令牌", "教材索引与原文", "自由提问、教学对话与补充推理", "浏览器速记记录"],
+            "notice": "仅供归档的学习摘要，不能用于恢复学习身份或导入学习历史。结构化作答仍属于个人学习记录，请自行保管。",
+            "report": summary}
+
+
+def reset_learning(db, learner, body):
+    """Delete only this learner's selected data after a matching confirmation."""
+    scope = body.get("scope", "learning")
+    if scope not in ("learning", "all"):
+        raise InputError("清理范围必须为 learning 或 all")
+    confirmation = "CLEAR_MY_DATA" if scope == "all" else "CLEAR_MY_LEARNING"
+    if body.get("confirmation") != confirmation:
+        raise InputError("清空需明确确认对应的数据范围")
+    deleted = {"attempts": 0, "events": 0, "learners": 0, "sources": 0, "tutor_conversations": 0}
+    for table in ("attempts", "events", "tutor_conversations") + (("sources",) if scope == "all" else ()):
+        deleted[table] = db.execute(f"DELETE FROM {table} WHERE learner=?", (learner,)).rowcount
+    deleted["learners"] = db.execute("DELETE FROM learners WHERE id=?", (learner,)).rowcount
+    remaining = db.execute("SELECT COUNT(*) FROM sources WHERE learner=?", (learner,)).fetchone()[0]
+    return {"ok": True, "scope": scope, "deleted": deleted, "remaining_sources": remaining}
 
 
 # ---------- 书页 UI 适配层 ----------
 # 书页前端调用 /api/overview、/api/ask、/api/pubmed；
 # 这里把它们映射到本项目的教学引擎，界面不用改。
 
-def _book_stats():
+def _book_stats(db, learner):
     """教材来源按书汇总：段落数、页码范围。"""
     books = {}
-    for s in textbook_sources():
+    imports = [json.loads(row[0]) for row in db.execute(
+        "SELECT payload FROM sources WHERE learner=?", (learner,))]
+    for s in textbook_sources() + imports:
+        if s.get("kind") not in ("textbook", "local", "metadata") or not s.get("book"):
+            continue
         b = books.setdefault(s["book"], {"book": s["book"], "chunks": 0, "min": 10 ** 6, "max": 0})
         b["chunks"] += 1
         if isinstance(s.get("page"), int):
@@ -481,7 +650,7 @@ def _book_stats():
     return out
 
 
-def _recent(db, learner, limit=8):
+def _recent(db, learner, limit=20):
     rows = db.execute("SELECT created,payload FROM events WHERE learner=? AND kind='ask' ORDER BY id DESC LIMIT ?",
                       (learner, limit)).fetchall()
     out = []
@@ -518,11 +687,32 @@ def _weak(db, learner, limit=6):
 
 def overview_payload(db, learner):
     snap = snapshot(db, learner)
-    books = _book_stats()
-    history = report(db, learner).get("history", [])
+    books = _book_stats(db, learner)
+    now = time.time()
+    local_date = datetime.fromtimestamp(now, SHANGHAI)
+    day_start = local_date.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    ask_rows = db.execute("SELECT created,payload FROM events WHERE learner=? AND kind='ask'",
+                          (learner,)).fetchall()
+    cited = []
+    for row in ask_rows:
+        try:
+            cited.append((row["created"], bool(json.loads(row["payload"]).get("page"))))
+        except (ValueError, TypeError):
+            cited.append((row["created"], False))
+    week = [ok for created, ok in cited if now - 7 * 86400 <= created <= now]
+    day = [ok for created, ok in cited if day_start <= created <= now]
+    literature_week = db.execute(
+        "SELECT COUNT(*) FROM events WHERE learner=? AND kind='literature' AND created BETWEEN ? AND ?",
+        (learner, now - 7 * 86400, now)).fetchone()[0]
+    literature_day = db.execute(
+        "SELECT COUNT(*) FROM events WHERE learner=? AND kind='literature' AND created BETWEEN ? AND ?",
+        (learner, day_start, now)).fetchone()[0]
     return {
-        "questions": {"total": len(history), "week": sum(1 for h in history if time.time() - h["created"] < 7 * 86400),
-                      "week_cited": sum(1 for h in history if time.time() - h["created"] < 7 * 86400 and h["score"] > 0)},
+        "course": snap["course"], "active": snap["active"],
+        "day_date": local_date.strftime("%Y-%m-%d"),
+        "questions": {"total": len(cited), "week": len(week), "week_cited": sum(week),
+                      "day": len(day), "day_cited": sum(day)},
+        "literature": {"week": literature_week, "day": literature_day},
         "books": books,
         "chunks": sum(b["chunks"] for b in books),
         "recent": _recent(db, learner),
@@ -530,74 +720,108 @@ def overview_payload(db, learner):
         "concepts": snap["concepts"],
         "recommendation": snap["recommendation"],
         "stats": snap["stats"],
+        "learning_plan": build_plan(snap['concepts'], attempts_get(db, learner), snap['active']),
         "status": {"llm": bool(API_KEY), "model": MODEL if API_KEY else "本地规则引擎",
                    "pubmed": True, "coverage_threshold": textbook.MIN_COVERAGE,
                    "textbook": textbook.status()["loaded"]},
     }
 
 
+def _textbook_key_points(question, passage):
+    """从命中页挑出短句；只摘录原文，不生成原文没有的医学判断。"""
+    text = re.sub(r"\s+", " ", passage).strip()
+    sentences = [s.strip() for s in re.split(r"(?<=[。！？；;])\s*", text) if s.strip()]
+    if not sentences:
+        return ""
+    terms = tokenize(question)
+    ranked = sorted(enumerate(sentences), key=lambda pair: (
+        -sum(1 for term in terms if term in pair[1].lower()), pair[0]))
+    start = ranked[0][0]
+    result = "".join(sentences[start:start + 3])
+    if len(result) > 300:
+        result = result[:300].rsplit("，", 1)[0] or result[:300]
+        result += "…"
+    return result
+
+
 def ask_compat(db, learner, body):
-    """把书页的 {question} 映射到本项目的 ask({query, concept})，并返回书页需要的字段。"""
+    """首页先给出可核对的教材书页与原文要点；文献只在用户点击后查询。"""
     question = str(body.get("question") or body.get("query") or "").strip()
-    if not question:
-        raise InputError("问题不能为空")
-    state = state_get(db, learner)
-    cid = body.get("concept") or state.get("concept") or CONCEPTS[0]["id"]
-    if cid not in CONCEPT_MAP:
-        cid = CONCEPTS[0]["id"]
-    result = ask(db, learner, {"query": question, "concept": cid})
+    if not 2 <= len(question) <= 300:
+        raise InputError("请输入 2–300 字的问题")
+    sources = all_sources(db, learner)
+    hits = [s for s in retrieve(question, sources)
+            if s.get("kind") in ("textbook", "local")
+            and isinstance(s.get("page"), int) and s["page"] > 0
+            and s.get("book") and s.get("text")
+            and ("小胶质细胞" not in question or "小胶质细胞" in s["text"]
+                 or "microglia" in s["text"].lower())]
+    cites = []
+    for source in hits[:3]:
+        excerpt = _textbook_key_points(question, source["text"])
+        original = next((s for s in sources if s["id"] == source["id"]
+                         and s["book"] == source["book"] and s["page"] == source["page"]), None)
+        quote = re.sub(r"\s+", "", excerpt.rstrip("…"))
+        if original and quote and quote in re.sub(r"\s+", "", original["text"]):
+            cites.append({"book": source["book"], "page": source["page"], "ok": True,
+                          "chapter": source.get("chapter", ""),
+                          "reason": "本地页码索引；请对照原书核验" if source["kind"] == "textbook" else "用户导入页码；请对照原书核验",
+                          "snippet": excerpt, "source_id": source["id"]})
+    top = cites[0] if cites else None
+    event(db, learner, "ask", "", {"query": question,
+          "book": top["book"] if top else "", "page": top["page"] if top else 0,
+          "source_ids": [c["source_id"] for c in cites]})
+    if top:
+        answer = ("《%s》第 %s 页有相关内容。\n教材要点（原文摘录）：%s" %
+                  (top["book"], top["page"], top["snippet"]))
+        tips = ["以上是检索到的教材原文要点，页码请对照你使用的版本核验。",
+                "想继续了解相关研究吗？可进入文献漫游。"]
+    else:
+        answer = "本地教材索引尚未找到与这个问题对应的可核对书页。请导入包含该主题、书名和页码的教材内容后再试；目前不能编造页码或课本总结。"
+        tips = ["仍可自愿进入文献漫游，查看 PubMed 的真实研究；文献不能代替教材页码。"]
+    return {"question": question, "question_id": 0, "answer": answer,
+            "mode": "教材摘录" if top else "拒答", "refused": not bool(top),
+            "coverage": round(float(hits[0].get("coverage", 0)), 2) if top else 0,
+            "expanded": [], "citations": cites, "chunks": hits[:3],
+            "papers": [], "pubmed_note": "", "tips": tips,
+            "wander": {"question": question, "prompt": "要不要深入了解？进入文献漫游查找前沿研究。"}}
 
-    cites, answer_parts = [], []
-    for seg in result.get("segments", []):
-        src = next((s for s in result.get("citations", []) if s["id"] == seg["source_id"]), None)
-        if not src:
-            continue
-        answer_parts.append(seg.get("quote", ""))
-        cites.append({"book": src.get("book", ""), "page": src.get("page"), "ok": True,
-                      "reason": "教材原文命中，页码来自本地索引" if src.get("kind") == "textbook" else "自编学习卡，无页码",
-                      "snippet": seg.get("quote", "")[:60]})
-    # 答案卡只放最相关的一段（多段拼在一起会变成无关内容的堆叠）
-    answer_text = answer_parts[0] if answer_parts else result.get("message", "")
-    if answer_parts and cites:
-        top = cites[0]
-        tail = "（依据《%s》P%s）" % (top["book"], top["page"]) if top.get("page") else "（依据%s）" % top["book"]
-        answer_text = answer_text + tail
-    if not cites:
-        for src in result.get("citations", [])[:3]:
-            cites.append({"book": src.get("book", ""), "page": src.get("page"),
-                          "ok": src.get("kind") == "textbook",
-                          "reason": "候选来源" if src.get("kind") == "textbook" else "自编学习卡",
-                          "snippet": str(src.get("text", ""))[:60]})
-    top = next((s for s in result.get("citations", []) if s.get("kind") == "textbook"), {})
-    coverage = float(top.get("coverage", 0)) if top else 0.0
 
-    tips = []
-    rec = recommend(progress(db, learner))
-    if rec:
-        tips.append("当前最需要推进的是「%s」：%s" % (rec["name"], rec["status"]))
-    tips.append("回答只来自检索到的原文；找不到依据时会明确拒答，不猜。")
-
-    return {"question": question, "question_id": 0,
-            "answer": answer_text,
-            "mode": "教材检索" if result.get("segments") else "拒答",
-            "refused": bool(result.get("refused")), "coverage": round(coverage, 2),
-            "expanded": [], "citations": cites, "chunks": result.get("citations", []),
-            "papers": [], "pubmed_note": "", "tips": tips, "warning": result.get("warning", "")}
+def research_query_for(question):
+    """明确映射已支持的中文主题；绝不套用无关知识点的检索式。"""
+    q = question.strip().lower()
+    if not q or len(q) > 300:
+        raise InputError("请输入 1–300 字的研究主题")
+    if re.search(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}|(?<!\d)1[3-9]\d{9}(?!\d)|(?<!\d)\d{17}[0-9x](?!\d)", q):
+        raise InputError("检索词疑似包含个人联系方式或证件号；请改用匿名的医学主题")
+    if re.fullmatch(r"[\x20-\x7e]+", q) and re.search(r"[a-z]{3}", q):
+        return question.strip(), "直接使用输入的英文 PubMed 检索式"
+    if "小胶质细胞" in q:
+        if "突触" in q:
+            focus, label = '"synaptic pruning"[Title/Abstract]', "突触修剪"
+        elif "炎症" in q:
+            focus, label = 'neuroinflammation[Title/Abstract]', "神经炎症"
+        else:
+            focus, label = '(function[Title/Abstract] OR role[Title/Abstract])', "功能"
+        today = time.strftime("%Y/%m/%d", time.localtime())
+        return ('(microglia[Title] OR microglial[Title]) AND '
+                + focus + ' AND ("2021/01/01"[Date - Publication] : "' + today + '"[Date - Publication])',
+                "小胶质细胞·%s；限定近年发表，按发表日期排序" % label)
+    for concept in CONCEPTS:
+        if any(term.lower() in q for term in concept["terms"] if len(term) >= 3):
+            return concept["query"], "基于「%s」的英文检索模板；请核对与原问题的匹配度" % concept["name"]
+    raise InputError("目前没有这个中文主题的英文检索模板。请在漫游页输入英文关键词或 PubMed 检索式。")
 
 
 def pubmed_compat(db, learner, body):
-    """书页的 /api/pubmed：用概念预设检索式，或把中文疑问交给研究闸门判断。"""
+    """只在用户主动请求后查询 PubMed；返回真实 PMID 与摘要。"""
     question = str(body.get("question") or "").strip()
-    cid = body.get("concept")
-    state = state_get(db, learner)
-    cid = cid if cid in CONCEPT_MAP else (state.get("concept") or CONCEPTS[0]["id"])
-    c = CONCEPT_MAP[cid]
-    gate = research_gate(c, question)
-    query = gate.get("query") or c["query"]
-    if not re.search(r"[a-zA-Z]{3}", str(query)):
-        raise InputError("检索式需要是英文；当前知识点未提供可用模板")
-    out = pubmed(query)
-    return {"papers": out["papers"], "note": query, "gate": gate}
+    query, mapping = research_query_for(question)
+    out = pubmed(query, sort="pub date")
+    event(db, learner, "literature", "", {"question": question, "query": query,
+          "pmids": [p["pmid"] for p in out["papers"]]})
+    return {"papers": out["papers"], "note": query, "mapping": mapping,
+            "count": out["count"], "fetched_at": out["fetched_at"], "cached": out["cached"]}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -646,8 +870,61 @@ class Handler(BaseHTTPRequestHandler):
         if not self.allowed():
             return self.send({"error": "只接受本机同源访问"}, 403)
         path = urllib.parse.urlparse(self.path).path
+        if path == '/api/tutor':
+            try:
+                learner = self.learner()
+                token = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get('token', [''])[0]
+                provider = tutor_model.status()
+                with LOCK, connect() as db:
+                    return self.send(tutor_snapshot(db, learner, token, provider))
+            except InputError as e:
+                return self.send({'error': str(e)}, 400)
         if path == "/api/health":
             return self.send({"ok": True, "name": "MedNexus"})
+        if path in ("/api/quick-notes", "/api/quick-notes/source.pdf"):
+            if not self.client_address[0].startswith("127."):
+                return self.send({"error": "速记资料仅供本机使用"}, 403)
+            if path == "/api/quick-notes/source.pdf":
+                if not QUICK_NOTES_SOURCE.is_file():
+                    return self.send({"error": "本机未找到速记原文件"}, 404)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/pdf")
+                self.send_header("Content-Disposition", "inline; filename=quick-notes.pdf")
+                self.send_header("Content-Length", str(QUICK_NOTES_SOURCE.stat().st_size))
+                self.send_header("Cache-Control", "private, no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                with QUICK_NOTES_SOURCE.open("rb") as source:
+                    shutil.copyfileobj(source, self.wfile)
+                return
+            if not QUICK_NOTES_PATH.is_file():
+                return self.send({"available": False, "items": [], "message": "本机还没有导入速记资料"})
+            try:
+                notes = json.loads(QUICK_NOTES_PATH.read_text(encoding="utf-8"))
+                if not isinstance(notes, dict) or not isinstance(notes.get("items"), list):
+                    raise ValueError("items must be a list")
+                return self.send(notes)
+            except (OSError, ValueError, TypeError):
+                return self.send({"error": "速记资料读取失败，请重新导入"}, 500)
+        if path == "/api/course-materials" or path.startswith("/api/course-materials/images/"):
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
+                return self.send({"error": "用户提供的课程资料仅限本机访问"}, 403)
+            if path == "/api/course-materials":
+                data = materials.load_materials()
+                data["cards"] = materials.review_cards(data.get("histology", {}))
+                return self.send(data)
+            target = materials.image_path(path.rsplit("/", 1)[-1])
+            if not target:
+                return self.send({"error": "原图不存在"}, 404)
+            raw = target.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", mimetypes.guess_type(target)[0] or "application/octet-stream")
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Cache-Control", "private, no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         if path.startswith("/api/"):
             try:
                 learner = self.learner()
@@ -661,7 +938,7 @@ class Handler(BaseHTTPRequestHandler):
                     if path == "/api/report":
                         return self.send(report(db, learner))
                     if path == "/api/export":
-                        return self.send({"version": 1, "exported_at": time.time(), "report": report(db, learner)})
+                        return self.send(export_learning(db, learner))
                 return self.send({"error": "接口不存在"}, 404)
             except InputError as e:
                 return self.send({"error": str(e)}, 400)
@@ -693,10 +970,30 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 raise InputError("请求格式应为 JSON 对象")
             path = urllib.parse.urlparse(self.path).path
+            if path == '/api/tutor':
+                return self.send(tutor_turn(learner, body))
+            if path == "/api/course-materials/review":
+                if self.client_address[0] not in ("127.0.0.1", "::1"):
+                    return self.send({"error": "课程资料校对仅限本机操作"}, 403)
+                try:
+                    return self.send(materials.save_review(body))
+                except materials.ReviewConflict as error:
+                    return self.send({"error": str(error)}, 409)
             if path == "/api/pubmed":
                 _t0 = time.time()
-                with connect() as db:
-                    out = pubmed_compat(db, learner, body)
+                try:
+                    with connect() as db:
+                        out = pubmed_compat(db, learner, body)
+                except InputError:
+                    raise
+                except Exception:
+                    question = str(body.get("question") or "").strip()
+                    try:
+                        query, _ = research_query_for(question)
+                    except InputError:
+                        query = question
+                    return self.send({"error": "PubMed 当前连接失败，未返回任何虚构文献。可稍后重试或直接打开 PubMed。",
+                                      "url": "https://pubmed.ncbi.nlm.nih.gov/?term=" + urllib.parse.quote(query)}, 502)
                 out["_ms"] = int((time.time() - _t0) * 1000)
                 return self.send(out)
             if path == "/api/ask" and ("question" in body and "query" not in body):
@@ -762,6 +1059,8 @@ class Handler(BaseHTTPRequestHandler):
                     out = make_task(db, learner, cid, body.get("kind", "auto"))
                 elif path == "/api/answer":
                     out = grade(db, learner, body)
+                elif path == "/api/hint":
+                    out = request_hint(db, learner, body)
                 elif path == "/api/study":
                     c = CONCEPT_MAP[cid]
                     event(db, learner, "study", cid)
@@ -773,14 +1072,11 @@ class Handler(BaseHTTPRequestHandler):
                     out = research_gate(CONCEPT_MAP[cid], str(body.get("question", "")))
                     event(db, learner, "research-gate", cid, out)
                 elif path == "/api/import":
+                    if body.get("authorized") is not True:
+                        raise InputError("请先确认索引内容有合法使用依据，且不含个人或校内敏感信息")
                     out = import_sources(db, learner, body.get("records"))
                 elif path == "/api/reset":
-                    if body.get("confirmation") != "CLEAR_MY_LEARNING":
-                        raise InputError("清空需明确确认")
-                    for table in ("attempts", "events", "sources"):
-                        db.execute(f"DELETE FROM {table} WHERE learner=?", (learner,))
-                    db.execute("DELETE FROM learners WHERE id=?", (learner,))
-                    out = {"ok": True}
+                    out = reset_learning(db, learner, body)
                 else:
                     return self.send({"error": "接口不存在"}, 404)
             return self.send(out)

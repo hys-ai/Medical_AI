@@ -4,9 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#eef4ff">
-<title>书页 · 医学生 AI 学习助手</title>
+<title>医枢 MedNexus · 医学学习工作台</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%233b6ef6'/%3E%3Ctext x='16' y='22' font-size='16' text-anchor='middle' fill='white' font-family='sans-serif'%3E页%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="tutor-chat.css">
 </head>
 <body>
 <svg class="sprite" aria-hidden="true">
@@ -33,7 +34,7 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="4"/><circle cx="9" cy="11.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="11.5" r="1.4" fill="currentColor" stroke="none"/><path d="M9.2 15.4c1.7 1.2 3.9 1.2 5.6 0"/><path d="M12 2.6v2.2"/></svg>
       </span>
       <span class="brand-text">
-        <strong>医学生 AI 学习助手</strong>
+        <strong>医枢 MedNexus</strong>
         <small>从学习到科研，陪你一起成长</small>
       </span>
     </div>
@@ -42,8 +43,10 @@
       <button class="nav-item is-active" data-view="home"><svg><use href="#i-home"></use></svg><span>首页</span></button>
       <button class="nav-item" data-view="learn"><svg><use href="#i-learn"></use></svg><span>我的学习</span></button>
       <button class="nav-item" data-view="quiz"><svg><use href="#i-clip"></use></svg><span>学习评估</span></button>
+      <button class="nav-item" data-view="quicknotes"><svg><use href="#i-learn"></use></svg><span>速记自测</span></button>
       <button class="nav-item" data-view="books"><svg><use href="#i-books"></use></svg><span>知识库</span></button>
-      <button class="nav-item" data-view="research"><svg><use href="#i-flask"></use></svg><span>科研探索</span></button>
+      <button class="nav-item" data-view="materials"><svg><use href="#i-books"></use></svg><span>课程资料与题库</span></button>
+      <button class="nav-item" data-view="research"><svg><use href="#i-flask"></use></svg><span>文献漫游</span></button>
       <button class="nav-item" data-view="me"><svg><use href="#i-user"></use></svg><span>个人中心</span></button>
     </nav>
 
@@ -53,7 +56,7 @@
   <main class="main">
     <header class="topbar">
       <div class="topbar-right">
-        <button class="icon-btn" title="通知"><svg><use href="#i-bell"></use></svg></button>
+        <button class="icon-btn" title="查看学习报告" aria-label="查看学习报告" data-view="quiz"><svg><use href="#i-clip"></use></svg></button>
         <div class="user"><span class="avatar">同</span><span>同学</span></div>
       </div>
     </header>
@@ -78,6 +81,11 @@
         </div>
       </div>
 
+      <article class="panel learning-plan" id="learningPlan" aria-labelledby="learningPlanTitle">
+        <div class="learning-plan-heading"><div><p class="study-label">根据你的作答安排下一步</p><h2 id="learningPlanTitle">今天从这里开始</h2></div></div>
+        <p class="study-source" role="status">正在读取学习计划…</p>
+      </article>
+
       <form class="askbar" id="askForm" autocomplete="off">
         <div class="askbar-icon"><svg><use href="#i-spark"></use></svg></div>
         <input id="q" type="text" maxlength="300" placeholder="你可以告诉我你正在学习的章节，或者直接开始学习...">
@@ -85,10 +93,11 @@
       </form>
       <div class="chips" id="chips">
         <span class="chip-label">例如：</span>
-        <button class="chip" type="button">心血管系统</button>
+        <button class="chip" type="button">小胶质细胞的功能</button>
         <button class="chip" type="button">帮我找相关的教材资料</button>
         <button class="chip" type="button">我有个问题想问…</button>
       </div>
+      <p class="privacy-note">教学演示用途。请勿输入患者资料、个人信息或校内未授权数据；回答不能替代临床判断。</p>
 
       <div id="result" class="result" hidden>
         <div class="result-head">
@@ -113,9 +122,15 @@
             </div>
           </aside>
         </div>
-        <article class="panel papers-panel">
-          <div class="panel-head"><span class="panel-icon green"><svg><use href="#i-flask"></use></svg></span><h3>文献卡<small>前沿怎么说</small></h3><span class="tag ghost" id="pmQuery"></span></div>
-          <div class="papers" id="papers"></div>
+        <article class="panel wander-panel">
+          <div class="panel-head"><span class="panel-icon green"><svg><use href="#i-flask"></use></svg></span><h3>继续探索<small>由你决定是否查询文献</small></h3></div>
+          <p id="wanderPrompt">要不要深入了解？进入文献漫游查找前沿研究。</p>
+          <button class="btn wander-button" id="wanderBtn" type="button">进入文献漫游 →</button>
+        </article>
+        <article class="panel learning-report" id="localMaterialMatches" hidden>
+          <h3>你提供的复习资料</h3>
+          <p class="study-source">以下为本机资料的 OCR 匹配，不是教材依据或已核验答案。请打开原图确认文字和上下文。</p>
+          <div id="localMaterialMatchesBody"></div>
         </article>
       </div>
 
@@ -124,26 +139,20 @@
         <button class="quick-card" data-act="learn">
           <span class="quick-icon blue"><svg><use href="#i-learn"></use></svg></span>
           <strong>开始学习</strong>
-          <p>选择章节，进入专属学习模式（智能提问 + 讲解 + 练习）</p>
+          <p>进入脑神经示例章节，按当前掌握情况安排学习</p>
           <span class="quick-go"><svg><use href="#i-arrow"></use></svg></span>
         </button>
         <button class="quick-card" data-act="research">
           <span class="quick-icon green"><svg><use href="#i-flask"></use></svg></span>
-          <strong>科研探索</strong>
-          <p>发现值得研究的问题，检索 PubMed 文献</p>
+          <strong>文献漫游</strong>
+          <p>从教材问题出发，检索 PubMed 文献</p>
           <span class="quick-go green"><svg><use href="#i-arrow"></use></svg></span>
         </button>
         <button class="quick-card" data-act="quiz">
           <span class="quick-icon amber"><svg><use href="#i-clip"></use></svg></span>
           <strong>学习评估</strong>
-          <p>根据大纲检查掌握情况，生成诊断与补学建议</p>
+          <p>按示例目标检查掌握情况，生成诊断与补学建议</p>
           <span class="quick-go amber"><svg><use href="#i-arrow"></use></svg></span>
-        </button>
-        <button class="quick-card" data-act="mentor">
-          <span class="quick-icon violet"><svg><use href="#i-user"></use></svg></span>
-          <strong>导师推荐</strong>
-          <p>获取相关领域的导师信息和研究方向（后续版本）</p>
-          <span class="quick-go violet"><svg><use href="#i-arrow"></use></svg></span>
         </button>
       </div>
 
@@ -156,11 +165,13 @@
 
     <section class="view" id="view-learn">
       <h1 class="page-title">我的学习</h1>
-      <p class="page-sub">这里汇总你的提问记录与反复卡住的页段。数据全部来自本地记录，不上传。</p>
+      <p class="page-sub">按课程和章节进入学习，根据作答证据选择下一步。当前开放脑神经示例章节，内容与目标待教师审核。</p>
+      <article class="panel course-panel" id="coursePanel" aria-live="polite">正在读取课程与学习进度…</article>
+      <h2 class="section-title">提问记录</h2>
       <div class="metric-row" id="metrics"></div>
       <div class="two-col">
         <article class="panel">
-          <div class="panel-head"><span class="panel-icon amber"><svg><use href="#i-clip"></use></svg></span><h3>薄弱页段<small>按提问频次</small></h3></div>
+          <div class="panel-head"><span class="panel-icon amber"><svg><use href="#i-clip"></use></svg></span><h3>常问页段<small>提问频次不代表掌握度</small></h3></div>
           <div id="weakList" class="weak"></div>
         </article>
         <article class="panel">
@@ -176,7 +187,7 @@
       <div class="metric-row" id="quizMetrics"></div>
       <div class="two-col">
         <article class="panel">
-          <div class="panel-head"><span class="panel-icon blue"><svg><use href="#i-clip"></use></svg></span><h3>诊断题<small id="quizKind">尚未开始</small></h3></div>
+          <div class="panel-head"><span class="panel-icon blue"><svg><use href="#i-clip"></use></svg></span><h3>本次练习<small id="quizKind">尚未开始</small></h3></div>
           <div id="quizArea"></div>
         </article>
         <article class="panel">
@@ -186,21 +197,60 @@
           <div id="quizReport" class="weak"></div>
         </article>
       </div>
+      <article class="panel learning-report" id="learningReport">
+        <div class="panel-head"><span class="panel-icon blue"><svg><use href="#i-clock"></use></svg></span><h3>学习报告<small>要点评分与前后变化</small></h3></div>
+        <div id="learningReportBody">正在读取学习记录…</div>
+      </article>
+    </section>
+
+    <section class="view" id="view-quicknotes">
+      <h1 class="page-title">系统解剖学 · 速记自测</h1>
+      <p class="page-sub">来自你提供的 37 页考点速记。先看提示并口述，再翻开答案自行核对；扫描识别内容尚未逐条审核，不计入正式掌握度。</p>
+      <div class="metric-row" id="quicknoteMetrics"></div>
+      <article class="panel quicknote-panel">
+        <div class="quicknote-filters">
+          <label>章节<select id="quicknoteSection"><option value="">全部章节</option></select></label>
+          <label>状态<select id="quicknoteStatus"><option value="">全部</option><option value="unseen">未练习</option><option value="review">待复习</option><option value="known">已记住</option></select></label>
+          <label>搜索<input id="quicknoteSearch" type="search" placeholder="输入编号或解剖学术语"></label>
+        </div>
+        <div class="quicknote-card" id="quicknoteCard" aria-live="polite">正在读取本地速记资料…</div>
+        <div class="quicknote-actions">
+          <button class="btn" id="quicknotePrev" type="button">上一条</button>
+          <button class="btn" id="quicknoteNext" type="button">下一条</button>
+          <button class="btn" id="quicknoteRandom" type="button">随机一条</button>
+          <button class="btn btn-primary" id="quicknoteReveal" type="button">查看答案</button>
+          <button class="btn" id="quicknoteReview" type="button">待复习</button>
+          <button class="btn" id="quicknoteKnown" type="button">已记住</button>
+        </div>
+        <p class="quicknote-hint">自测记录仅保存在当前浏览器。若识别文字可疑，请用卡片上的“查看 PDF 原页”核对。</p>
+      </article>
     </section>
 
     <section class="view" id="view-books">
       <h1 class="page-title">知识库</h1>
       <p class="page-sub">已入库的教材与索引规模。问答时的页码引用全部来自这里。</p>
       <div class="book-grid" id="bookGrid"></div>
+      <article class="panel import-panel">
+        <div class="panel-head"><span class="panel-icon blue"><svg><use href="#i-books"></use></svg></span><h3>导入本地教材索引</h3></div>
+        <p class="note-text">选择你已核对的 JSON 或 JSONL 索引。每条至少填写书名、章节和正整数页码；有权在本机使用的段落文本可选。仅有页码时只能定位，无法总结课本内容。</p>
+        <div class="import-actions">
+          <input id="indexFile" type="file" accept=".json,.jsonl,application/json" aria-label="选择教材索引文件">
+          <button class="btn btn-primary" id="importIndex" type="button">导入索引</button>
+          <button class="btn" id="downloadIndexTemplate" type="button">下载空白模板</button>
+        </div>
+        <label class="import-confirm"><input id="importAuthorized" type="checkbox">我确认仅导入有权使用的索引或短段落，且不含个人信息、校内敏感数据及账号密钥。</label>
+        <p class="study-source" id="importStatus" aria-live="polite"></p>
+      </article>
       <article class="panel note-panel">
         <div class="panel-head"><span class="panel-icon green"><svg><use href="#i-books"></use></svg></span><h3>页码规则</h3></div>
-        <p class="note-text">引用中的页码是<strong>印刷页码</strong>，与 PDF 页码存在固定偏移（三本书分别为 +19 / +29 / +23）。系统在生成答案后逐条回查该页原文，对不上就删除引用或整体拒答。</p>
+        <p class="note-text">页码来自本地教材索引或用户导入的资料。不同版本的印刷页码与 PDF 页码可能不同，请对照原书核验；没有可核对的书名、页码和内容时，系统不会编造教材答案。</p>
       </article>
     </section>
 
     <section class="view" id="view-research">
-      <h1 class="page-title">科研探索</h1>
-      <p class="page-sub">把一个学习中的疑问，变成可以检索的科研问题。检索式由系统自动生成，文献来自 PubMed 公开接口。</p>
+      <h1 class="page-title">文献漫游</h1>
+      <p class="page-sub">从教材问题出发，主动检索 PubMed 公开文献。先核对英文检索式，再阅读真实标题、摘要和 PMID；文献不能替代教材页码。</p>
+      <p class="privacy-note">请勿输入个人或患者信息。文献标题和摘要来自第三方，摘要权利可能属于作者或出版社；这里只展示简短预览，请通过 PubMed 链接核对原文。NCBI 不为本项目背书。</p>
       <form class="askbar small" id="pmForm">
         <div class="askbar-icon"><svg><use href="#i-flask"></use></svg></div>
         <input id="pmQ" type="text" maxlength="300" placeholder="例如：肠道菌群如何影响免疫治疗的疗效？">
@@ -208,18 +258,58 @@
       </form>
       <div class="chips">
         <span class="chip-label">例如：</span>
-        <button class="chip pm-chip">高原缺氧为什么会导致红细胞增多</button>
-        <button class="chip pm-chip">慢性炎症与肿瘤的关系</button>
-        <button class="chip pm-chip">肠道菌群与免疫治疗</button>
+        <button class="chip pm-chip">小胶质细胞的功能</button>
+        <button class="chip pm-chip">microglia synaptic pruning</button>
+        <button class="chip pm-chip">microglia neuroinflammation</button>
       </div>
       <div class="pm-status" id="pmStatus"></div>
       <div class="papers big" id="pmResults"></div>
+      <article class="panel learning-report" id="paperReading" hidden>
+        <div class="panel-head"><span class="panel-icon green"><svg><use href="#i-flask"></use></svg></span><h3>摘要阅读框架<small>只据 PubMed 摘要，不推断全文</small></h3></div>
+        <div id="paperReadingBody"></div>
+      </article>
+      <div class="research-return" id="researchReturn" hidden>
+        <button class="btn btn-primary" id="returnTransfer" type="button">回到原知识点做迁移题 →</button>
+      </div>
     </section>
 
+    <section class="view" id="view-materials">
+      <h1 class="page-title">课程资料与题库</h1>
+      <p class="page-sub">用户提供的组胚复习资料与系统解剖学课程大纲，仅供本机学习。原图序号与文档段落号均不是教材页码；识别文字和资料答案尚待教师校对。</p>
+      <article class="panel">
+        <div class="quicknote-filters">
+          <label>资料<select id="materialType"><option value="cards">组胚复习自测</option><option value="histology">组胚原图与知识检索</option><option value="syllabus">系统解剖学大纲</option></select></label>
+          <label>章节 / 目标<select id="materialFilter"><option value="">全部</option></select></label>
+          <label>搜索<input id="materialSearch" type="search" placeholder="题干、术语、知识点，如小胶质细胞"></label>
+        </div>
+        <p id="materialSummary" class="study-source" role="status"></p>
+        <div class="material-tools">
+          <form id="materialJumpForm"><label>跳转到筛选结果第 <input id="materialJump" type="number" min="1" step="1" value="1" required> 条</label><button class="btn" id="materialGo" type="submit">跳转</button></form>
+          <label id="materialLineFilterLabel">文字筛选<select id="materialLineFilter"><option value="all">全部识别文字</option><option value="pending">尚未对图核对</option><option value="priority">只看优先核对</option><option value="edited">只看本机修订</option></select></label>
+          <button class="btn" id="materialExport" type="button">导出当前筛选文字</button>
+        </div>
+        <div id="materialBody" aria-live="polite">正在读取本地课程资料…</div>
+        <div class="quicknote-actions"><button class="btn" id="materialPrev">上一条</button><button class="btn" id="materialNext">下一条</button><button class="btn" id="materialReveal">查看资料并核对</button></div>
+        <p class="study-source">自测用于回忆与人工核对，不自动评分，不计入正式掌握度。课程大纲只说明学习要求，不包含教材正文或标准答案。</p>
+      </article>
+    </section>
     <section class="view" id="view-me">
       <h1 class="page-title">个人中心</h1>
-      <p class="page-sub">运行状态与配置说明。所有数据保存在本机，不联网上传。</p>
+      <p class="page-sub">学习记录保存在运行服务的电脑上，当前浏览器用匿名标识区分记录。文献检索会发送查询式至 NCBI；启用可选模型后，相关问题与资料也会发往配置的模型服务。</p>
       <div class="panel status-panel" id="statusPanel"></div>
+      <article class="panel learning-report">
+        <div class="panel-head"><span class="panel-icon blue"><svg><use href="#i-clip"></use></svg></span><h3>我的数据<small>导出与清理</small></h3></div>
+        <p class="note-text">导出用于个人归档，包含测评得分与结构化作答，请妥善保存。不包含教材原文、提问原文、自由推理、账号密钥或浏览器身份标识；速记自测只附带编号和自评状态。</p>
+        <button class="btn btn-primary" id="exportLearning" type="button">下载学习记录（JSON）</button>
+        <div class="data-clear">
+          <label for="clearScope">清理范围</label>
+          <select id="clearScope"><option value="learning">仅学习记录，保留导入索引</option><option value="all">学习记录和我导入的教材索引</option></select>
+          <p class="study-source">会清除当前浏览器身份的作答、提问、未完成任务和本浏览器速记自评；其他浏览器身份的记录、共享索引文件和本机 PDF 保留。已下载的导出文件需自行管理。此操作不能撤销。</p>
+          <label class="import-confirm"><input id="clearConfirmed" type="checkbox">我已了解清理范围，需要保留的记录已下载。</label>
+          <button class="btn btn-danger" id="clearLearning" type="button" disabled>清理所选数据</button>
+        </div>
+        <p class="study-source" id="dataStatus" role="status" aria-live="polite"></p>
+      </article>
     </section>
   </main>
 
@@ -249,6 +339,8 @@
 </div>
 
 <div class="toast" id="toast"></div>
+<script src="tutor-chat.js"></script>
 <script src="app.js"></script>
+<script src="materials.js"></script>
 </body>
 </html>

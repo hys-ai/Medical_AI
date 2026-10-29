@@ -11,6 +11,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.test-tmp/
 node_modules/
 qa/
 reference-review/
@@ -29,6 +30,8 @@ reference-review/
 *.pdf
 book_*.jsonl
 chunks.jsonl
+mednexus/data/quick_notes_cards.json
+mednexus/data/course_materials/
 embeddings.npy
 embedding_ids.json
 libs/

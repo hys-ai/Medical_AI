@@ -66,6 +66,15 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(wrong['action'], 'study')
             self.assertEqual(right['action'], 'transfer')
 
+    def test_auto_task_retests_basics_after_wrong_answer(self):
+        with server.connect() as db:
+            self.answer(db, 'oculomotor', 0)
+            task = server.make_task(db, self.learner, 'oculomotor', 'auto')
+            self.assertEqual(task['kind'], 'diagnostic')
+            self.answer(db, 'light', 3)
+            task = server.make_task(db, self.learner, 'light', 'auto')
+            self.assertEqual(task['kind'], 'transfer')
+
     def test_one_perfect_task_is_only_initial_evidence(self):
         with server.connect() as db:
             self.answer(db)
@@ -162,6 +171,12 @@ class AgentTests(unittest.TestCase):
             with self.assertRaises(server.InputError):
                 server.import_sources(db, self.learner, [{'book':'有效','chapter':'脑神经','page':1},{'book':'无效','chapter':'脑神经','page':None}])
             self.assertEqual(db.execute('SELECT COUNT(*) FROM sources').fetchone()[0], 0)
+
+    def test_import_rejects_chapter_sized_text(self):
+        with server.connect() as db:
+            with self.assertRaises(server.InputError):
+                server.import_sources(db,self.learner,[{
+                    'book':'测试教材','chapter':'测试章节','page':1,'text':'甲'*2001}])
 
     def test_text_import_can_be_matched_and_sources_are_private(self):
         with server.connect() as db:

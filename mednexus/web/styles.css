@@ -131,6 +131,43 @@ svg { width: 1.2em; height: 1.2em; fill: none; stroke: currentColor; stroke-widt
 .hero-art { flex: none; width: 240px; opacity: .95; }
 .hero-art svg { width: 100%; height: auto; }
 
+/* ---------- 根据作答安排的首页学习计划 ---------- */
+.learning-plan { margin: 0 0 20px; }
+.learning-plan-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.learning-plan-heading .study-label { margin: 0 0 4px; }
+.learning-plan-heading h2 { font-size: 19px; line-height: 1.45; }
+.learning-plan-heading > button { flex: none; }
+.learning-plan-status:empty { display: none; }
+.learning-plan-scope { margin: 8px 0 12px; }
+.learning-plan-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
+.learning-plan-metrics > div { display: flex; flex-direction: column; gap: 3px; padding: 9px 10px; border-radius: 10px; background: var(--surface-2); }
+.learning-plan-metrics strong { font-size: 20px; color: var(--ink); }
+.learning-plan-metrics span { font-size: 11px; color: var(--muted); }
+.learning-plan-list { display: flex; flex-direction: column; gap: 9px; }
+.learning-plan-item { display: flex; align-items: center; justify-content: space-between; gap: 14px; border: 1px solid var(--line); border-radius: 13px; padding: 13px; }
+.learning-plan-item.is-next { background: linear-gradient(120deg, var(--blue-soft), #fff); border-color: #c9dafb; }
+.learning-plan-content { min-width: 0; }
+.learning-plan-name { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 9px; }
+.learning-plan-name h3 { font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.learning-plan-name .pill { white-space: nowrap; flex: none; }
+.learning-plan-reason, .learning-plan-weak { margin: 7px 0 0; font-size: 12px; color: var(--ink-2); line-height: 1.7; overflow-wrap: anywhere; }
+.learning-plan-weak { color: #946225; }
+.learning-plan-detail { margin: 7px 0 0; font-size: 11px; }
+.learning-plan-task { flex: none; white-space: nowrap; }
+.learning-plan-task:disabled { opacity: .55; cursor: progress; }
+.learning-plan-method { margin-top: 12px; font-size: 12px; color: var(--muted); }
+.learning-plan-method summary { cursor: pointer; }
+.learning-plan-method .study-source { margin-bottom: 0; }
+.learning-plan-more { font-size: 12px; color: var(--muted); }
+.learning-plan-more summary { cursor: pointer; padding: 4px 0; }
+.learning-plan-more .learning-plan-item { margin-top: 9px; }
+@media (max-width: 720px) {
+  .learning-plan { padding: 16px; }
+  .learning-plan-item { flex-direction: column; align-items: stretch; gap: 10px; }
+  .learning-plan-task { align-self: flex-start; }
+  .learning-plan-metrics > div { padding: 8px; }
+}
+
 /* ---------- 提问框 ---------- */
 .askbar {
   display: flex; align-items: center; gap: 12px;
@@ -269,7 +306,7 @@ svg { width: 1.2em; height: 1.2em; fill: none; stroke: currentColor; stroke-widt
 .link:hover { color: var(--blue); }
 .link.small { font-size: 11.5px; }
 
-.quick { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.quick { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
 .quick-card {
   position: relative; text-align: left;
   padding: 20px 18px 22px;
@@ -410,7 +447,82 @@ svg { width: 1.2em; height: 1.2em; fill: none; stroke: currentColor; stroke-widt
 .note-text { color: var(--ink-2); font-size: 13px; line-height: 1.85; }
 .note-text strong { color: var(--ink); }
 
-.pm-status { margin: 16px 0 10px; color: var(--muted); font-size: 12.5px; }
+.pm-status { margin: 16px 0 10px; color: var(--muted); font-size: 12.5px; white-space: pre-line; line-height: 1.7; overflow-wrap: anywhere; }
+.wander-panel { margin-top: 16px; }
+.wander-panel p { color: var(--ink-2); font-size: 14px; margin: 8px 0 16px; }
+.wander-button { display: inline-flex; align-items: center; justify-content: center; min-height: 42px; padding: 0 18px; border-radius: 12px; background: var(--blue); color: white; font: inherit; font-size: 13px; font-weight: 650; }
+.wander-button:hover { background: var(--blue-deep); }
+.btn { display: inline-flex; align-items: center; justify-content: center; min-height: 38px; padding: 8px 15px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--surface); color: var(--ink-2); font-size: 13px; font-weight: 600; }
+.btn:hover { border-color: #b9cdf1; color: var(--blue-deep); }
+.btn-primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+.btn-primary:hover { background: var(--blue-deep); color: #fff; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-danger { color: #a23131; border-color: #e5b9b9; }
+.data-clear { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
+.data-clear select { display: block; max-width: 100%; margin-top: 8px; padding: 10px; font: inherit; }
+.plan-action { background: none; text-align: left; color: inherit; font: inherit; padding: 0; }
+.course-panel { margin-bottom: 24px; }
+.course-heading { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; }
+.course-heading h2 { margin: 6px 0; font-size: 22px; }
+.course-layout { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(250px, 1fr); gap: 24px; margin-top: 20px; }
+.course-unit { margin: 16px 0 8px; font-size: 13px; color: var(--muted); }
+.course-topic { display: flex; width: 100%; gap: 12px; justify-content: space-between; text-align: left; padding: 11px; margin: 5px 0; border-radius: 10px; background: var(--surface-2); color: var(--ink); }
+.course-topic small { flex-shrink: 0; color: var(--muted); }
+.course-topic.is-active { background: var(--blue-soft); outline: 1px solid #b9cdf1; }
+.course-entry { padding: 20px; border: 1px solid var(--line); border-radius: 14px; align-self: start; }
+.course-modes { margin: 18px 0; border: 0; padding: 0; }
+.course-modes legend { font-weight: 600; margin-bottom: 12px; }
+.course-modes label { display: flex; gap: 8px; margin: 12px 0; font-size: 13px; line-height: 1.6; }
+.course-resume { display: block; margin-top: 16px; }
+.material-image { display: block; max-width: 100%; height: auto; margin: 16px auto; }
+.material-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 14px; line-height: 1.8; }
+.ocr-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; margin-top: 14px; align-items: start; }
+@media (min-width: 901px) { .app:has(#view-materials.is-active) > .main { grid-column: 2 / -1; } }
+.material-tools, .material-tools form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.material-tools { margin: 12px 0; }
+.material-tools label { font-size: 12px; color: var(--muted); }
+.material-tools select, .material-tools input { padding: 8px; font: inherit; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); }
+#materialJump { width: 78px; }
+.ocr-image-side { position: sticky; top: 10px; min-width: 0; }
+.ocr-zoom-controls { margin-top: 0; }
+.ocr-text-panel, .ocr-image-pane { max-height: 72vh; overflow: auto; border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+.ocr-image-pane { padding: 0; }
+.ocr-image-wrap { position: relative; width: 100%; }
+.ocr-image-wrap .material-image { margin: 0; width: 100%; }
+.ocr-highlight { position: absolute; outline: 3px solid #ef8b20; background: #ffcf5c4a; pointer-events: none; min-height: 3px; }
+.ocr-row { display: flex; gap: 8px; border-bottom: 1px solid var(--line); padding: 8px 0; align-items: flex-start; }
+.ocr-segment { flex: 1 1 0; min-width: 0; padding: 6px; font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
+.ocr-segment.is-uncertain { background: #fff4df; border-radius: 7px; }
+.ocr-locate { display: block; margin-top: 4px; font-size: 11px; color: var(--blue-deep); background: none; text-align: left; }
+.ocr-locate:disabled { color: var(--muted); cursor: default; }
+.ocr-alternative { display: block; color: var(--muted); margin-top: 5px; font-size: 11px; }
+.ocr-source-warning { padding: 10px; background: #fff4df; color: #79541d; font-size: 13px; line-height: 1.7; border-radius: 8px; }
+.ocr-editor { margin-top: 8px; font-size: 12px; }
+.ocr-editor summary { cursor: pointer; color: var(--blue-deep); }
+.ocr-editor textarea { display: block; width: 100%; min-height: 100px; margin: 8px 0; padding: 8px; resize: vertical; box-sizing: border-box; border: 1px solid var(--line); border-radius: 8px; font: inherit; line-height: 1.7; }
+.ocr-check { display: flex; gap: 5px; align-items: flex-start; }
+.ocr-editor .btn { padding: 7px; font-size: 11px; }
+.ocr-history { margin-top: 8px; }
+@media (max-width: 900px) { .ocr-workspace { grid-template-columns: 1fr; } .ocr-image-side { position: static; } .ocr-image-pane { max-height: 50vh; } }
+@media (max-width: 720px) { .course-layout { grid-template-columns: 1fr; } .course-heading { flex-direction: column; } }
+.study-label, .study-source { margin: 14px 0 8px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.learning-report { margin-top: 16px; }
+.report-row { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 10px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.report-row b { min-width: 180px; }
+.report-row span { color: var(--ink-2); }
+.research-bridge { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+.research-bridge b { flex-basis: 100%; font-size: 13px; }
+.research-bridge input { flex: 1 1 230px; min-height: 38px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 10px; font: inherit; font-size: 13px; }
+.research-bridge .study-source { flex-basis: 100%; margin: 0; }
+.paper-authors { color: var(--muted); font-size: 12px; margin: 2px 0 7px; }
+.paper-read { display: block; margin-top: 8px; font-size: 12px; }
+.research-return { margin-top: 16px; }
+.import-panel { margin-bottom: 16px; }
+.import-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 12px; }
+.import-actions input[type="file"] { max-width: 100%; font-size: 12px; color: var(--ink-2); }
+.import-confirm { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; color: var(--ink-2); font-size: 12px; line-height: 1.6; }
+.import-confirm input { margin-top: 3px; }
+.privacy-note { margin: 12px 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
 .papers.big .paper { padding: 16px 18px; }
 
 .status-panel { display: flex; flex-direction: column; gap: 0; padding: 6px 22px; }
@@ -474,3 +586,29 @@ svg { width: 1.2em; height: 1.2em; fill: none; stroke: currentColor; stroke-widt
 #quizArea .cite.ok { border-color: #cfe8dd; background: var(--green-soft); }
 #quizArea .cite.no { border-color: #f6d9d3; background: #fdf1ef; }
 #quizArea .cite b { color: var(--ink); }
+
+/* ---------- 速记自测 ---------- */
+.quicknote-panel { padding: 22px; }
+.quicknote-filters { display: grid; grid-template-columns: 1fr 1fr 1.6fr; gap: 12px; margin-bottom: 20px; }
+.quicknote-filters label { display: flex; flex-direction: column; gap: 6px; color: var(--ink-2); font-size: 12px; font-weight: 600; }
+.quicknote-filters select, .quicknote-filters input {
+  width: 100%; min-height: 40px; padding: 8px 11px; border: 1px solid var(--line);
+  border-radius: 10px; background: var(--surface); color: var(--ink); font: inherit;
+}
+.quicknote-card { min-height: 220px; padding: 24px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface-2); }
+.quicknote-position, .quicknote-section { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
+.quicknote-cue { margin: 10px 0 14px; color: var(--ink); font-size: 21px; line-height: 1.5; }
+.quicknote-badge { display: inline-block; padding: 5px 9px; border-radius: 999px; background: var(--blue-soft); color: var(--blue-deep); font-size: 11px; }
+.quicknote-answer { margin: 22px 0 12px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--ink); font-size: 16px; line-height: 1.85; white-space: pre-wrap; }
+.quicknote-source { color: var(--blue-deep); font-size: 13px; text-decoration: none; }
+.quicknote-source:hover { text-decoration: underline; }
+.quicknote-caution, .quicknote-hint { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.quicknote-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.quicknote-actions .btn:disabled { opacity: .5; cursor: not-allowed; }
+.quicknote-hint { margin: 14px 0 0; }
+@media (max-width: 720px) {
+  .quicknote-panel { padding: 16px; }
+  .quicknote-filters { grid-template-columns: 1fr; }
+  .quicknote-card { padding: 18px; }
+  .quicknote-cue { font-size: 18px; }
+}

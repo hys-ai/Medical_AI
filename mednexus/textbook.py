@@ -88,7 +88,9 @@ def _build():
             page = rec.get("page")
             if not text or not isinstance(page, int) or page < 1:
                 continue
-            book = str(rec.get("book", "")).strip() or "未命名教材"
+            book = str(rec.get("book", "")).strip()
+            if not book:
+                continue
             sid = "tb-" + hashlib.sha256(
                 (book + "|" + str(page) + "|" + text[:40]).encode("utf-8")
             ).hexdigest()[:16]
