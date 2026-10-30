@@ -28,6 +28,7 @@ import textbook
 import materials
 from tutoring import hint_text
 from planning import build_plan, SHANGHAI
+from reporting import build_report_evidence
 import tutor_chat
 import tutor_model
 
@@ -667,6 +668,7 @@ def report(db, learner):
                 errors[p["category"]] += 1
     events = [dict(r) for r in db.execute("SELECT kind,concept,payload,created FROM events WHERE learner=? ORDER BY id DESC LIMIT 50", (learner,))]
     return {**snap, "errors": dict(errors), "history": [{"id": a["id"], "concept": a["concept"], "kind": a["kind"], "score": round(a["score"] * 100), "created": a["created"], "result": json.loads(a["payload"])} for a in rows], "events": events,
+            "evidence_report": build_report_evidence(rows, QUESTION_MAP),
             "method": "要点等权计分；EMA=0.4×旧值+0.6×本次得分（首次为本次值）。掌握需两个不同题目独立达标、包含迁移题、最近两次均独立≥80%且EMA≥80%。提示作答属于辅助练习，看过不算掌握；此规则是原型设计，未作学习效果验证。"}
 
 

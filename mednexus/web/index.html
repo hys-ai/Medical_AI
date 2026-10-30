@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="tutor-chat.css">
 <link rel="stylesheet" href="course-catalog.css">
+<link rel="stylesheet" href="learning-report.css">
 </head>
 <body>
 <svg class="sprite" aria-hidden="true">
@@ -260,6 +261,7 @@
         <button class="send" type="submit" aria-label="判断问题或检索文献"><svg><use href="#i-search"></use></svg></button>
       </form>
       <p id="researchContextLabel" class="study-label"></p>
+      <p class="study-source">草稿仅保留在当前浏览器会话中，刷新后可恢复；不会自动检索。 <button id="newResearch" class="link" type="button">清空草稿，开始独立检索</button></p>
       <div id="researchQueryEditor" class="panel research-query-editor" hidden>
         <label for="pmQuery">确认英文检索式（可编辑）</label>
         <textarea id="pmQuery" rows="3" maxlength="1500"></textarea>
@@ -351,6 +353,8 @@
 <div class="toast" id="toast"></div>
 <script src="tutor-chat.js"></script>
 <script src="course-catalog.js"></script>
+<script src="research-session.js"></script>
+<script src="learning-report.js"></script>
 <script src="app.js"></script>
 <script src="materials.js"></script>
 </body>

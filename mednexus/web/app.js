@@ -17,6 +17,7 @@ let researchContext = null;
 let askOriginConcept = null;
 let answerOriginConcept = null;
 let learningPlanLoading = false;
+let reportRequestId = 0;
 
 /* ---------- 基础工具 ---------- */
 function el(tag, cls, text) {
@@ -112,7 +113,6 @@ $$(".nav-item").forEach((b) => {
   b.title = b.textContent.trim();
 });
 $$(".nav-item").forEach((b) => b.addEventListener("click", () => {
-  if (b.dataset.view === "research") resetResearchContext();
   if (b.dataset.view === "home") setAskContext(null);
   showView(b.dataset.view);
 }));
@@ -588,6 +588,7 @@ $("clearLearning").addEventListener("click", async () => {
   try {
     await api("/api/reset", { scope, confirmation: scope === "all" ? "CLEAR_MY_DATA" : "CLEAR_MY_LEARNING" });
     clearTutorChatState();
+    reportRequestId++;
     localStorage.removeItem(quicknoteKey());
     localStorage.removeItem("mednexus-materials-" + learnerId());
     quicknoteProgress = {}; quizTask = null; quizConcept = null; quizPhase = "empty";
@@ -768,6 +769,33 @@ function resetResearchContext() {
   $("paperReading").hidden = true; $("researchReturn").hidden = true;
   $("researchQueryEditor").hidden = true; $("pmQuery").value = "";
   $("researchContextLabel").textContent = "";
+  $("pmQ").value = "";
+  try { if (typeof clearResearchDraft === "function") clearResearchDraft(sessionStorage, learnerId()); } catch (_) {}
+}
+
+function rememberResearchWorkspace() {
+  if (typeof saveResearchDraft !== "function") return;
+  try {
+    saveResearchDraft(sessionStorage, learnerId(), {concept:wanderOriginConcept, question:$("pmQ").value,
+      query:$("pmQuery").value, ready:!$("researchQueryEditor").hidden}, (overviewData?.concepts || []).map(c => c.id));
+  } catch (_) {}
+}
+
+function restoreResearchWorkspace() {
+  if (typeof readResearchDraft !== "function") return;
+  let draft;
+  try { draft = readResearchDraft(sessionStorage, learnerId(), (overviewData?.concepts || []).map(c => c.id)); } catch (_) { return; }
+  if (!draft) return;
+  wanderOriginConcept = draft.concept;
+  researchContext = {concept:draft.concept, question:draft.question};
+  $("pmQ").value = draft.question; $("pmQuery").value = draft.query;
+  $("researchQueryEditor").hidden = !(draft.concept && draft.ready && draft.query && draft.question.trim());
+  $("researchReturn").hidden = !draft.concept;
+  if (draft.concept) {
+    const name = overviewData.concepts.find(c => c.id === draft.concept).name;
+    $("researchContextLabel").textContent = "来自：系统解剖学 / 脑神经 / " + name;
+  }
+  $("pmStatus").textContent = "已恢复本窗口的疑问与检索式草稿。文献结果未自动重查，请确认内容后主动检索。";
 }
 
 function openResearch(question, concept = null) {
@@ -782,6 +810,7 @@ function openResearch(question, concept = null) {
     $("researchReturn").hidden = false;
     $("pmStatus").textContent = "请写下这个知识点的具体机制、差异或证据疑问。先判断问题并确认英文检索式，再查询文献。";
   }
+  rememberResearchWorkspace();
 }
 
 async function pmSearch(q, originConcept = null, editedQuery = null) {
@@ -796,6 +825,7 @@ async function pmSearch(q, originConcept = null, editedQuery = null) {
   $("paperReading").hidden = true;
   $("researchReturn").hidden = !originConcept;
   $("researchQueryEditor").hidden = true;
+  rememberResearchWorkspace();
   try {
     if (originConcept && editedQuery === null) {
       const gate = await api("/api/research", { concept: originConcept, question: query });
@@ -805,6 +835,7 @@ async function pmSearch(q, originConcept = null, editedQuery = null) {
         $("pmQuery").value = gate.query;
         $("researchQueryEditor").hidden = false;
       }
+      rememberResearchWorkspace();
       return;
     }
     const payload = { question: query, retmax: 6 };
@@ -817,6 +848,7 @@ async function pmSearch(q, originConcept = null, editedQuery = null) {
       : "";
     renderPapers($("pmResults"), data.papers, data.note);
     if (originConcept) { $("pmQuery").value = data.note; $("researchQueryEditor").hidden = false; }
+    rememberResearchWorkspace();
     $("researchReturn").hidden = !wanderOriginConcept;
     if (!data.papers || !data.papers.length) {
       $("pmStatus").textContent = "没有取到文献：" + (data.note || "检索式为空");
@@ -825,6 +857,7 @@ async function pmSearch(q, originConcept = null, editedQuery = null) {
     if (request !== pmRequestId) return;
     $("pmStatus").textContent = "检索失败：" + e.message;
     if (originConcept && editedQuery !== null) $("researchQueryEditor").hidden = false;
+    rememberResearchWorkspace();
     if (e.url) {
       const a = el("a", null, "在 PubMed 打开检索式 ↗");
       a.href = e.url;
@@ -924,11 +957,17 @@ $("pmForm").addEventListener("submit", (e) => {
   pmSearch($("pmQ").value, wanderOriginConcept);
 });
 $("runResearchQuery").addEventListener("click", () => pmSearch($("pmQ").value, wanderOriginConcept, $("pmQuery").value));
+$("pmQuery").addEventListener("input", rememberResearchWorkspace);
+$("newResearch").addEventListener("click", () => {
+  resetResearchContext(); $("pmQ").focus();
+  $("pmStatus").textContent = "已开启独立检索。可输入医学主题或英文 PubMed 检索式。";
+});
 $("pmQ").addEventListener("input", () => {
   pmRequestId++; readingRequestId++;
   $("researchQueryEditor").hidden = true; $("paperReading").hidden = true;
   $("pmResults").innerHTML = "";
   $("pmStatus").textContent = "疑问已修改，请重新提交。";
+  rememberResearchWorkspace();
 });
 
 $$(".pm-chip").forEach((c) => {
@@ -964,14 +1003,27 @@ async function resumeActiveTask() {
   quizLoading = true;
   try {
     const data = await api("/api/bootstrap");
-    if (quizPhase !== "empty" || !data.active) return;
-    quizConcept = data.active.concept;
-    quizTask = data.active;
-    quizPhase = "task";
-    renderTaskCard(data.active);
+    if (quizPhase !== "empty") return;
+    if (data.active) {
+      quizConcept = data.active.concept;
+      quizTask = data.active;
+      quizPhase = "task";
+      renderTaskCard(data.active);
+    } else if (data.last_result) {
+      quizConcept = data.last_result.concept;
+      quizTask = null;
+      quizPhase = "result";
+      $("quizKind").textContent = data.last_result.kind === "transfer" ? "上次迁移题结果" : "上次诊断题结果";
+      renderQuizResult(data.last_result);
+    }
     renderQuiz(overviewData);
   } catch (e) {
-    console.warn("active task restore failed", e);
+    if (quizPhase === "empty") {
+      const box = $("quizArea");
+      box.textContent = "上次学习状态读取失败：" + e.message;
+      const retry = el("button", "btn", "重新读取上次学习");
+      retry.type = "button"; retry.addEventListener("click", resumeActiveTask); box.appendChild(retry);
+    }
   } finally { quizLoading = false; }
 }
 
@@ -1005,7 +1057,6 @@ function renderQuiz(data) {
       b.dataset.cid = c.id;
       b.classList.toggle("is-active", c.id === quizConcept);
       b.addEventListener("click", () => {
-        $$(".chip", box).forEach((x) => x.classList.toggle("is-active", x === b));
         loadTask(c.id, "auto");
       });
       box.appendChild(b);
@@ -1294,27 +1345,33 @@ function studyEvidence(source) {
 
 async function loadLearningReport() {
   const box = $("learningReportBody");
+  const request = ++reportRequestId;
+  box.textContent = "正在读取实际作答记录…";
   try {
     const data = await api("/api/report");
-    box.innerHTML = "";
-    const stats = data.stats || {};
-    box.appendChild(el("p", "answer", "已测评 " + (stats.assessed || 0) + " / " +
-      (stats.total || 0) + " 个知识点；已掌握 " + (stats.mastered || 0) +
-      " 个。掌握度为原型规则判断，尚未验证为真实学习效果。"));
-    const errors = Object.entries(data.errors || {}).sort((a, b) => b[1] - a[1]);
-    box.appendChild(el("p", "study-label", errors.length ?
-      "常见错误类型：" + errors.map(([name, count]) => name + " " + count + " 次").join("、") :
-      "尚无错误记录。"));
-    (data.concepts || []).filter((c) => c.attempts).forEach((c) => {
-      const row = el("div", "report-row");
-      row.appendChild(el("b", null, c.name));
-      row.appendChild(el("span", null, "要求：" + c.level + " · " + c.status));
-      row.appendChild(el("span", null, "首次 " + c.pre + " 分 → 最近 " +
-        (c.post ?? c.pre) + " 分" + (c.last_assisted ? "（辅助练习）" : "（独立作答记录）")));
-      box.appendChild(row);
+    if (request !== reportRequestId) return;
+    mountLearningReport(box, data, {
+      onReview: async row => {
+        if (!row.can_study_current) return;
+        if (quizLoading || quizSubmitting || quizHintLoading) { toast("当前任务正在处理，请稍后切换"); return; }
+        showView("quiz", {restoreTask:false});
+        await showStudyForResult({concept:row.concept});
+        $("quizArea").scrollIntoView({behavior:"smooth",block:"start"});
+      },
+      onRetest: async row => {
+        if (quizLoading || quizSubmitting || quizHintLoading) { toast("当前任务正在处理，请稍后切换"); return; }
+        if (!["diagnostic", "transfer"].includes(row.kind)) return;
+        showView("quiz", {restoreTask:false});
+        await loadTask(row.concept, row.kind);
+        $("quizArea").scrollIntoView({behavior:"smooth",block:"start"});
+      }
     });
   } catch (e) {
+    if (request !== reportRequestId) return;
     box.textContent = "学习报告读取失败：" + e.message;
+    const retry = el("button", "btn", "重新读取学习报告");
+    retry.type = "button"; retry.addEventListener("click", loadLearningReport);
+    box.appendChild(retry);
   }
 }
 
@@ -1452,6 +1509,7 @@ $("quicknoteReveal").addEventListener("click", () => {
 /* ---------- 启动 ---------- */
 (async function init() {
   await refreshOverview();
+  restoreResearchWorkspace();
   const preset = new URLSearchParams(location.search).get("q");
   const hash = location.hash.replace("#", "");
   if (hash && VIEWS.includes(hash)) showView(hash);
