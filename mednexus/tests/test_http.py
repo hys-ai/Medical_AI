@@ -71,6 +71,31 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(plan['items'][0]['concept'],'oculomotor')
         self.assertTrue(plan['items'][0]['weak_points'])
 
+    def test_answer_reflection_round_trip_validates_and_restores_the_saved_choice(self):
+        identity = {'X-Learner-ID': 'e' * 48}
+        status, raw, _ = self.request('/api/task', {'concept': 'oculomotor', 'kind': 'diagnostic'}, identity)
+        self.assertEqual(status, 200)
+        token = json.loads(raw)['token']
+        body = {'token': token, 'answers': ['暂时不确定'] * 3, 'confidence': '很有把握',
+                'reasoning': 'SYNTHETIC_HTTP_REFLECTION'}
+        status, _, _ = self.request('/api/answer', {**body, 'reasoning': {}}, identity)
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(self.request('/api/bootstrap', headers=identity)[1])['active']['token'], token)
+        status, raw, _ = self.request('/api/answer', body, identity)
+        self.assertEqual(status, 200)
+        result = json.loads(raw)
+        self.assertEqual(result['score'], 0)
+        self.assertTrue(result['calibration'])
+        self.assertEqual(result['confidence'], '很有把握')
+        self.assertEqual(result['confidence_source'], 'self_reported')
+        self.assertEqual(result['reasoning'], body['reasoning'])
+        bootstrap = json.loads(self.request('/api/bootstrap', headers=identity)[1])
+        self.assertIsNone(bootstrap['active'])
+        self.assertEqual(bootstrap['last_result']['reasoning'], body['reasoning'])
+        self.assertNotIn(body['reasoning'].encode(), self.request('/api/export', headers=identity)[1])
+        _, raw, _ = self.request('/api/answer', {**body, 'reasoning': 'CHANGED'}, identity)
+        self.assertEqual(json.loads(raw), result)
+
     def test_foreign_origin_cannot_submit(self):
         status,_,_=self.request('/api/task',{'concept':'oculomotor'},{'Origin':'https://example.org'})
         self.assertEqual(status,403)

@@ -295,9 +295,13 @@ def grade(db, learner, body):
     answers = body.get("answers")
     if not isinstance(answers, list) or len(answers) != 3 or any(not isinstance(a, str) or a not in opts for a, opts in zip(answers, active["options"])):
         raise InputError("请完成三个要点的选择；不会时可以选暂时不确定")
-    confidence = body.get("confidence", "一般")
-    if confidence not in ("不确定", "一般", "很有把握"):
+    confidence = body.get("confidence", "未填写")
+    if confidence not in ("未填写", "不确定", "一般", "很有把握"):
         raise InputError("未知信心选项")
+    reasoning = body.get("reasoning", "")
+    if not isinstance(reasoning, str) or len(reasoning) > 3000:
+        raise InputError("补充推理须为不超过3000字的文字")
+    _check_research_privacy(reasoning, "补充推理")
     c, q = QUESTION_MAP[active["question"]]
     rubric = [{"label": p["label"], "selected": a, "correct": a == p["correct"], "expected": p["correct"], "reason": p["reason"], "category": p["category"]} for a, p in zip(answers, q["points"])]
     score = sum(p["correct"] for p in rubric) / len(rubric)
@@ -311,8 +315,9 @@ def grade(db, learner, body):
         action, label, why = "next", "查看学习结果与下一知识点", "迁移题已达标；掌握判断还会检查不同题目与最近表现。"
     result = {"concept": c["id"], "question": q["id"], "kind": q["kind"], "score": round(score * 100), "rubric": rubric,
               "action": action, "label": label, "why": why, "confidence": confidence,
+              "confidence_source": "omitted" if confidence == "未填写" else "self_reported",
               "calibration": "信心与表现有差异，建议回看推理依据。" if confidence == "很有把握" and score < .8 else "",
-              "reasoning": str(body.get("reasoning", ""))[:3000], "grading": "结构化要点评分；补充推理仅记录，未自动评分"}
+              "reasoning": reasoning.strip(), "grading": "结构化要点评分；补充推理仅记录，未自动评分"}
     result['hinted_points'] = sorted(int(i) for i in active.get('hints', {}))
     result['tutor_token'] = token
     result['dialogue_assisted'] = bool(active.get('tutor_assisted'))
@@ -683,6 +688,7 @@ def export_learning(db, learner):
         summary["history"].append({
             **{key: attempt[key] for key in ("concept", "kind", "score", "created")},
             "question": result["question"], "confidence": result["confidence"],
+            "confidence_source": result.get("confidence_source", "legacy_default"),
             "assisted": result.get("assisted", False), "hinted_points": result.get("hinted_points", []),
             "dialogue_assisted": result.get("dialogue_assisted", False),
             "rubric": [{key: point[key] for key in
@@ -874,10 +880,10 @@ def ask_compat(db, learner, body):
             "wander": {"question": question, "prompt": "要不要深入了解？进入文献漫游查找前沿研究。"}}
 
 
-def _check_research_privacy(text):
+def _check_research_privacy(text, label="检索词"):
     if re.search(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}|(?<!\d)1[3-9]\d{9}(?!\d)|(?<!\d)\d{17}[0-9x](?!\d)", text, re.I) or re.search(
             r"(?:患者姓名|姓名|住址|病历号|住院号)\s*[:：]|(?:patient name|medical record(?: number)?|home address)\s*:", text, re.I):
-        raise InputError("检索词疑似包含个人联系方式、身份或病历信息；请改用匿名的医学主题")
+        raise InputError(label + "疑似包含个人联系方式、身份或病历信息；请改用匿名的医学主题")
 
 
 def research_query_for(question):

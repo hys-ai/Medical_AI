@@ -588,6 +588,7 @@ $("clearLearning").addEventListener("click", async () => {
   try {
     await api("/api/reset", { scope, confirmation: scope === "all" ? "CLEAR_MY_DATA" : "CLEAR_MY_LEARNING" });
     clearTutorChatState();
+    try { clearTaskDraft(sessionStorage, learnerId()); } catch (_) {}
     reportRequestId++;
     localStorage.removeItem(quicknoteKey());
     localStorage.removeItem("mednexus-materials-" + learnerId());
@@ -1112,8 +1113,25 @@ function renderTaskCard(t) {
   area.innerHTML = "";
   area.appendChild(el("p", "answer", t.prompt));
 
+  let restored = null;
+  try { restored = readTaskDraft(sessionStorage, learnerId(), t); } catch (_) {}
+  const draft = {answers: restored?.answers.slice() || t.points.map(() => null),
+    confidence:restored?.confidence || '未填写', reasoning:restored?.reasoning || ''};
   const form = el("div");
-  const answers = [];
+  const answers = draft.answers;
+  const draftStatus = el('p', 'study-source task-draft-status', restored ?
+    '已恢复本窗口未提交的选择与补充记录；尚未计分。' :
+    '选择会作为草稿保留在本窗口，刷新可恢复；提交后才计分。');
+  draftStatus.setAttribute('role', 'status');
+  const remember = () => {
+    if (quizTask?.token !== t.token || quizPhase !== 'task') return;
+    let status = 'unavailable';
+    try { status = saveTaskDraft(sessionStorage, learnerId(), t, draft); } catch (_) {}
+    draftStatus.textContent = status === 'saved' ? '本窗口草稿已保存，尚未提交或计分。' : status === 'private' ?
+      '补充推理疑似含个人信息，草稿未保存。请改为匿名教学说明。' :
+      '浏览器暂不能保存草稿；可继续作答，刷新后可能丢失未提交内容。';
+  };
+  const optionButtons = [];
   (t.points || []).forEach((p, i) => {
     const wrap = el("div", "cite");
     wrap.style.flexDirection = "column";
@@ -1124,10 +1142,17 @@ function renderTaskCard(t) {
     p.options.forEach((opt) => {
       const b = el("button", "chip", opt);
       b.type = "button";
+      b.classList.toggle('is-active', answers[i] === opt);
+      b.setAttribute('aria-pressed', String(answers[i] === opt));
       b.addEventListener("click", () => {
+        if (quizSubmitting || quizLoading || quizTask?.token !== t.token || quizPhase !== 'task') return;
         answers[i] = opt;
-        $$(".chip", row).forEach((x) => x.classList.toggle("is-active", x === b));
+        $$(".chip", row).forEach((x) => {
+          x.classList.toggle("is-active", x === b); x.setAttribute('aria-pressed', String(x === b));
+        });
+        remember();
       });
+      optionButtons.push(b);
       row.appendChild(b);
     });
     wrap.appendChild(row);
@@ -1144,9 +1169,38 @@ function renderTaskCard(t) {
   });
   area.appendChild(form);
 
+  const reflection = el('div', 'task-reflection');
+  const confidenceLabel = el('label', 'task-confidence-label', '这次作答有多大把握？');
+  const confidence = el('select'); confidence.setAttribute('aria-label', '本次作答信心');
+  [['未填写','暂不记录信心'],['不确定','不确定'],['一般','一般'],['很有把握','很有把握']].forEach(([value, text]) => {
+    const option = el('option', null, text); option.value = value; confidence.appendChild(option);
+  });
+  confidence.value = draft.confidence;
+  confidence.addEventListener('change', () => { draft.confidence = confidence.value; remember(); });
+  confidenceLabel.appendChild(confidence); reflection.appendChild(confidenceLabel);
+  const reasoningDetails = el('details', 'task-reasoning');
+  reasoningDetails.appendChild(el('summary', null, '记录我的推理（可选）'));
+  const reasoningLabel = el('label', null, '说明你如何连接结构、功能与表现');
+  const reasoning = el('textarea'); reasoning.rows = 3; reasoning.maxLength = 3000;
+  reasoning.setAttribute('aria-label', '补充推理'); reasoning.value = draft.reasoning;
+  reasoning.placeholder = '仅写匿名教学分析，请勿输入个人或患者资料。';
+  reasoning.addEventListener('input', () => { draft.reasoning = reasoning.value; remember(); });
+  reasoningLabel.appendChild(reasoning);
+  reasoningDetails.append(reasoningLabel, el('p', 'study-source', '推理仅记录供回顾，不自动评分，也不会自动发给教学模型。'));
+  if (draft.reasoning) reasoningDetails.open = true;
+  reflection.appendChild(reasoningDetails); area.append(reflection, draftStatus);
+
   const submit = el("button", "btn btn-primary", "提交作答");
+  submit.type = 'button';
   submit.style.marginTop = "16px";
-  submit.addEventListener("click", () => submitAnswer(t, answers));
+  submit.addEventListener("click", async () => {
+    if (quizSubmitting || quizLoading || quizHintLoading || quizTask?.token !== t.token || quizPhase !== 'task') return;
+    const controls = [...optionButtons, confidence, reasoning, submit];
+    controls.forEach(control => { control.disabled = true; });
+    submit.textContent = '正在提交…';
+    try { await submitAnswer(t, answers.slice(), {confidence:draft.confidence, reasoning:draft.reasoning}); }
+    finally { controls.forEach(control => { control.disabled = false; }); submit.textContent = '提交作答'; }
+  });
   area.appendChild(submit);
   area.appendChild(el('p', 'study-source', '可先独立作答；思路提示按步骤展开。使用提示的作答会标为辅助练习，不作为独立掌握证据。'));
   const tutorBox = el('section'); area.appendChild(tutorBox);
@@ -1172,15 +1226,18 @@ async function requestTaskHint(t, point, button, container) {
   } finally { quizHintLoading = false; }
 }
 
-async function submitAnswer(t, answers) {
+async function submitAnswer(t, answers, reflection = {}) {
   if (quizSubmitting || quizLoading || quizHintLoading) return;
+  if (quizTask?.token !== t.token || quizPhase !== 'task') return;
   if (answers.filter(Boolean).length !== (t.points || []).length) {
     toast("三个要点都要选（不会可选「暂时不确定」）");
     return;
   }
   quizSubmitting = true;
   try {
-    const r = await api("/api/answer", { token: t.token, answers: answers, confidence: "一般" });
+    const r = await api("/api/answer", { token: t.token, answers: answers,
+      confidence: reflection.confidence || '未填写', reasoning: reflection.reasoning || '' });
+    try { clearTaskDraft(sessionStorage, learnerId(), t.token); } catch (_) {}
     quizTask = null;
     quizPhase = "result";
     renderQuizResult(r);
@@ -1201,6 +1258,7 @@ function renderQuizResult(r) {
   area.appendChild(head);
   area.appendChild(el("p", "page-sub", r.why));
   if (r.assisted) area.appendChild(el('p', 'pill', '辅助练习 · 使用过提示或教学对话，需再独立复测'));
+  renderAnswerReflection(area, r);
 
   (r.rubric || []).forEach((p) => {
     const row = el("div", "cite " + (p.correct ? "ok" : "no"));
@@ -1237,6 +1295,20 @@ function renderQuizResult(r) {
   }
 
   mountResearchBridge(area, r.concept);
+}
+
+function renderAnswerReflection(container, result) {
+  const confidence = result.confidence_source === 'self_reported' &&
+    ['不确定', '一般', '很有把握'].includes(result.confidence) ? result.confidence : null;
+  const reasoning = typeof result.reasoning === 'string' ? result.reasoning : '';
+  if (!confidence && !reasoning) return;
+  const details = el('details', 'task-reflection task-saved-reflection');
+  details.appendChild(el('summary', null, '回看本次信心与推理记录'));
+  if (confidence) details.appendChild(el('p', null, '提交时的信心：' + confidence));
+  if (confidence && typeof result.calibration === 'string' && result.calibration) details.appendChild(el('p', 'task-calibration', result.calibration));
+  if (reasoning) details.append(el('p', 'task-saved-reasoning', reasoning),
+    el('p', 'study-source', '以上为你提交时的推理记录，未参与自动评分。'));
+  container.appendChild(details);
 }
 
 function mountResearchBridge(container, concept) {
