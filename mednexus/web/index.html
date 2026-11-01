@@ -263,6 +263,7 @@
       <p id="researchContextLabel" class="study-label"></p>
       <p class="study-source">草稿仅保留在当前浏览器会话中，刷新后可恢复；不会自动检索。 <button id="newResearch" class="link" type="button">清空草稿，开始独立检索</button></p>
       <div id="researchQueryEditor" class="panel research-query-editor" hidden>
+        <div id="researchQueryPlan"></div>
         <label for="pmQuery">确认英文检索式（可编辑）</label>
         <textarea id="pmQuery" rows="3" maxlength="1500"></textarea>
         <p class="study-source">此模板来自当前知识点，尚未逐句翻译你的疑问。请核对英文主题与研究条件；只有点击下方按钮才会向 PubMed 发送检索词。</p>
@@ -357,6 +358,7 @@
 <script src="task-draft.js"></script>
 <script src="learning-report.js"></script>
 <script src="paper-reading.js"></script>
+<script src="research-query.js"></script>
 <script src="app.js"></script>
 <script src="materials.js"></script>
 </body>

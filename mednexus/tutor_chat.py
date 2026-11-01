@@ -43,7 +43,10 @@ def _validate_messages(messages):
         content = item.get('content')
         if not isinstance(content, str) or not content.strip() or len(content) > 3000:
             raise ValueError('每条教学对话需为1至3000字的文字')
-        clean.append({'role': item['role'], 'content': content.strip()})
+        record = {'role': item['role'], 'content': content.strip()}
+        if item['role'] == 'assistant' and isinstance(item.get('follow_up'), str) and len(item['follow_up']) <= 300:
+            record['follow_up'] = item['follow_up'].strip()
+        clean.append(record)
     if clean[-1]['role'] != 'user':
         raise ValueError('教学对话最后一条需为用户提问')
     return clean
@@ -177,9 +180,18 @@ def reply(concept, question, messages, *, completed=False, generate=None):
         payload = {'concept': concept['name'], 'question': question['prompt'], 'completed': bool(completed),
                    'learning_card': {'id': 'note-' + concept['id'], 'text': concept['note'],
                                      'provenance': 'MedNexus自编教学摘要；无教材页码，需教师复核'},
-                   'teaching_points': teaching_points, 'dialogue': dialogue}
+                   'teaching_points': teaching_points,
+                   'dialogue': [{'role': item['role'], 'content': item['content'] +
+                                 ('\n接着想一想：' + item['follow_up'] if item.get('follow_up') else '')}
+                                for item in dialogue]}
         try:
-            return _validated_generated(generate(SYSTEM, payload), concept)
+            out = _validated_generated(generate(SYSTEM, payload), concept)
+            normalized = lambda text: re.sub(r'\s+', '', text)
+            if any(item['role'] == 'assistant' and normalized(item['content']) == normalized(out['message']) for item in dialogue):
+                fallback = _local_reply(concept, question, dialogue, completed)
+                fallback['warning'] = '检测到模型重复先前回复，已改用当前疑点的本地资料摘录；不是新的模型解释。' + CHECK_NOTICE
+                return fallback
+            return out
         except Exception:
             out = _local_reply(concept, question, dialogue, completed)
             out['warning'] = '模型回答暂不可用或未通过材料引用检查，已回退本地资料摘录；未生成经核验的开放式解释。'

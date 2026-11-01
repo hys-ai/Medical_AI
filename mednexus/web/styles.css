@@ -637,6 +637,14 @@ svg { width: 1.2em; height: 1.2em; fill: none; stroke: currentColor; stroke-widt
 .reading-original { color: var(--blue-deep); font-size: 13px; }
 .reading-missing, .reading-ai { margin: 14px 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
 .reading-missing summary, .reading-ai summary { cursor: pointer; color: var(--blue-deep); font-size: 13px; }
+.query-plan-title { margin: 0 0 10px; font-size: 15px; }
+.query-focus-matches { margin: 12px 0; padding-left: 20px; font-size: 13px; line-height: 1.8; overflow-wrap: anywhere; }
+.query-plan-warning { color: #9d4c24; font-size: 13px; line-height: 1.7; }
+.query-plan-original { margin: 14px 0; font-size: 13px; }
+.query-plan-original summary { cursor: pointer; color: var(--blue-deep); }
+.query-plan-original pre { margin: 10px 0; padding: 12px; background: var(--surface-2); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.8; }
+.query-plan-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.query-plan-status { margin: 10px 0 20px; font-size: 12px; color: var(--muted); line-height: 1.7; }
 @media (max-width: 720px) { .paper-reading-grid { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 720px) {
   .quicknote-panel { padding: 16px; }

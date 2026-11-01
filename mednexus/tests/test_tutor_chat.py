@@ -76,6 +76,35 @@ class TutorChatTests(unittest.TestCase):
                 self.assertIn('已回退',out['warning'])
                 self.assertNotIn('grade',out)
 
+    def test_repeated_assistant_message_falls_back_even_with_a_new_followup(self):
+        previous = self.output()['message']
+        messages = [{'role':'user','content':'瞳孔为什么会这样？'},
+                    {'role':'assistant','content':'  ' + previous + '\n', 'follow_up':'先前追问'},
+                    {'role':'user','content':'我已经说明了副交感纤维，能继续解释吗？'}]
+        calls = []
+        def generate(_, payload):
+            calls.append(payload)
+            return self.output(message=previous, follow_up='全新追问也不能掩盖正文重复')
+        result = self.ask(messages, generate=generate)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result['mode'], tutor_chat.LOCAL_MODE)
+        self.assertIn('重复', result['warning'])
+        self.assertNotEqual(result['message'], previous)
+
+    def test_history_includes_followup_once_but_dedup_only_compares_assistant_main_text(self):
+        follow_up = '新的正文可以回应旧追问，不应仅因复用追问被判重复。'
+        messages = [{'role':'user','content':'瞳孔为什么会这样？'},
+                    {'role':'assistant','content':'先前正文', 'follow_up':follow_up},
+                    {'role':'user','content':'请继续解释副交感纤维。'}]
+        calls = []
+        def generate(_, payload):
+            calls.append(payload)
+            return self.output(message=follow_up, follow_up=follow_up)
+        result = self.ask(messages, generate=generate)
+        self.assertEqual(result['mode'], tutor_chat.MODEL_MODE)
+        self.assertEqual(calls[0]['dialogue'][1]['content'], '先前正文\n接着想一想：' + follow_up)
+        self.assertEqual(set(calls[0]['dialogue'][1]), {'role','content'})
+
     def test_model_exception_falls_back_without_exposing_error_or_secrets(self):
         def fail(*_):
             raise RuntimeError('secret credential should not be in output')

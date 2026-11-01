@@ -47,6 +47,19 @@ class TutorServiceTests(unittest.TestCase):
                 server.tutor_snapshot(db,'b'*48,self.task['token'])
             self.assertEqual(len(server.attempts_get(db,self.learner)),0)
 
+    def test_displayed_followup_reaches_the_next_turn_without_merging_saved_fields(self):
+        first = self.turn()
+        assistant = first['messages'][1]
+        captured = []
+        def reply(*args, **kwargs):
+            captured.append(args[2])
+            return {'message':'第二轮合成正文', 'follow_up':'第二轮合成追问', 'sources':[], 'mode':'fixture'}
+        with patch.object(server.tutor_chat, 'reply', side_effect=reply):
+            second = self.turn('我认为提上睑肌参与，接下来如何分析？', '2'*32)
+        self.assertEqual(captured[0][1]['content'], assistant['content'])
+        self.assertEqual(captured[0][1]['follow_up'], assistant['follow_up'])
+        self.assertEqual(second['messages'][1], assistant)
+
     def test_dialogue_assistance_is_server_owned_and_post_answer_does_not_regrade(self):
         self.turn()
         with server.connect() as db:

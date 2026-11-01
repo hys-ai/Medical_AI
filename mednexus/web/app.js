@@ -771,6 +771,7 @@ function resetResearchContext() {
   $("researchQueryEditor").hidden = true; $("pmQuery").value = "";
   $("researchContextLabel").textContent = "";
   $("pmQ").value = "";
+  if (typeof clearResearchQueryPlan === 'function') clearResearchQueryPlan($("researchQueryPlan"));
   try { if (typeof clearResearchDraft === "function") clearResearchDraft(sessionStorage, learnerId()); } catch (_) {}
 }
 
@@ -792,6 +793,10 @@ function restoreResearchWorkspace() {
   $("pmQ").value = draft.question; $("pmQuery").value = draft.query;
   $("researchQueryEditor").hidden = !(draft.concept && draft.ready && draft.query && draft.question.trim());
   $("researchReturn").hidden = !draft.concept;
+  if (typeof clearResearchQueryPlan === 'function') {
+    clearResearchQueryPlan($("researchQueryPlan"));
+    $("researchQueryPlan").textContent = '已恢复编辑草稿；词语对照未恢复，可重新判断疑问取得建议。';
+  }
   if (draft.concept) {
     const name = overviewData.concepts.find(c => c.id === draft.concept).name;
     $("researchContextLabel").textContent = "来自：系统解剖学 / 脑神经 / " + name;
@@ -829,12 +834,17 @@ async function pmSearch(q, originConcept = null, editedQuery = null) {
   rememberResearchWorkspace();
   try {
     if (originConcept && editedQuery === null) {
+      if (typeof clearResearchQueryPlan === 'function') clearResearchQueryPlan($("researchQueryPlan"));
       const gate = await api("/api/research", { concept: originConcept, question: query });
       if (request !== pmRequestId) return;
       $("pmStatus").textContent = gate.reason + (gate.eligible ? "\n" + gate.mapping : "\n建议先补学，再明确要比较的条件或证据。");
       if (gate.eligible) {
         $("pmQuery").value = gate.query;
         $("researchQueryEditor").hidden = false;
+        if (typeof mountResearchQueryPlan === 'function') mountResearchQueryPlan($("researchQueryPlan"), gate.query_plan, value => {
+          if ($("pmQ").value.trim() !== query || wanderOriginConcept !== originConcept) return;
+          $("pmQuery").value = value; researchQueryChanged();
+        });
       }
       rememberResearchWorkspace();
       return;
@@ -849,6 +859,7 @@ async function pmSearch(q, originConcept = null, editedQuery = null) {
       : "";
     renderPapers($("pmResults"), data.papers, data.note);
     if (originConcept) { $("pmQuery").value = data.note; $("researchQueryEditor").hidden = false; }
+    if (typeof updateResearchQueryPlan === 'function') updateResearchQueryPlan($("researchQueryPlan"), $("pmQuery").value);
     rememberResearchWorkspace();
     $("researchReturn").hidden = !wanderOriginConcept;
     if (!data.papers || !data.papers.length) {
@@ -946,12 +957,14 @@ $("pmForm").addEventListener("submit", (e) => {
   pmSearch($("pmQ").value, wanderOriginConcept);
 });
 $("runResearchQuery").addEventListener("click", () => pmSearch($("pmQ").value, wanderOriginConcept, $("pmQuery").value));
-$("pmQuery").addEventListener("input", () => {
+$("pmQuery").addEventListener("input", () => researchQueryChanged());
+function researchQueryChanged() {
   pmRequestId++; readingRequestId++;
   $("pmResults").innerHTML = ""; $("paperReading").hidden = true;
   $("pmStatus").textContent = "检索式已修改，请确认后主动重新检索。";
+  if (typeof updateResearchQueryPlan === 'function') updateResearchQueryPlan($("researchQueryPlan"), $("pmQuery").value);
   rememberResearchWorkspace();
-});
+}
 $("newResearch").addEventListener("click", () => {
   resetResearchContext(); $("pmQ").focus();
   $("pmStatus").textContent = "已开启独立检索。可输入医学主题或英文 PubMed 检索式。";
@@ -961,6 +974,7 @@ $("pmQ").addEventListener("input", () => {
   $("researchQueryEditor").hidden = true; $("paperReading").hidden = true;
   $("pmResults").innerHTML = "";
   $("pmStatus").textContent = "疑问已修改，请重新提交。";
+  if (typeof clearResearchQueryPlan === 'function') clearResearchQueryPlan($("researchQueryPlan"));
   rememberResearchWorkspace();
 });
 

@@ -30,6 +30,7 @@ from tutoring import hint_text
 from planning import build_plan, SHANGHAI
 from reporting import build_report_evidence
 from reading import build_reading
+from research_query import build_query_proposal
 import tutor_chat
 import tutor_model
 
@@ -239,7 +240,9 @@ def tutor_turn(learner, body):
                 state = state_get(db, learner)
                 state['active']['tutor_assisted'] = True
                 state_save(db, learner, state)
-        history = [{'role': m['role'], 'content': m['content']} for m in messages]
+        history = [{'role': m['role'], 'content': m['content'],
+                    **({'follow_up': m['follow_up']} if m['role'] == 'assistant' and isinstance(m.get('follow_up'), str) else {})}
+                   for m in messages]
         history.append({'role': 'user', 'content': message})
         generated = tutor_chat.reply(c, q, history, completed=completed, generate=tutor_model.generator())
         source = SOURCES[c['source']]
@@ -529,14 +532,18 @@ def ask(db, learner, body):
 
 
 def research_gate(c, question, force=False):
+    if not isinstance(question, str) or len(question.strip()) > 300:
+        raise InputError("请输入不超过300字的研究疑问")
     question = question.strip()
+    _check_research_privacy(question)
     if not question:
         question = c["research"]
     # Requiring a relevant topic prevents unrelated generic 'mechanism' prompts.
     relevant = any(t.lower() in question.lower() for t in c["terms"]) or question == c["research"]
     open_signal = question == c["research"] or bool(re.search(r"研究|证据|争议|尚不明确|未明|差异|恢复|病因|指标|是否|能否|影响|不同|前沿|验证", question))
     eligible = relevant and open_signal
-    return {"eligible": eligible, "question": question, "reason": "疑问涉及可检验的差异、机制或证据，可以从研究文献继续探索；检索结果仍需人工评估相关性。" if eligible else "当前更像概念或通路问题，先用学习卡和定向练习补齐。可进一步明确要比较的机制、条件或证据。", "query": c["query"] if eligible else "", "suggestion": c["research"], "mapping": "基于当前知识点的人工编写英文检索模板；请核对并编辑，尚未逐句翻译你的疑问"}
+    proposal = build_query_proposal(c, question) if eligible else None
+    return {"eligible": eligible, "question": question, "reason": "疑问涉及可检验的差异、机制或证据，可以从研究文献继续探索；检索结果仍需人工评估相关性。" if eligible else "当前更像概念或通路问题，先用学习卡和定向练习补齐。可进一步明确要比较的机制、条件或证据。", "query": proposal["query"] if proposal else "", "suggestion": c["research"], "mapping": proposal["mapping"] if proposal else "尚未生成检索建议", "query_plan": proposal}
 
 
 def ncbi_get(endpoint, params):
@@ -915,7 +922,10 @@ def research_query_for(question):
 
 def research_request(body):
     """Keep the original gated question, selected concept and actual query together."""
-    question = str(body.get("question") or "").strip()
+    question = body.get("question", "")
+    if not isinstance(question, str):
+        raise InputError("研究疑问须为1–300字的文字")
+    question = question.strip()
     cid = body.get("concept")
     if cid is None:
         query, mapping = research_query_for(question)
@@ -1200,7 +1210,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif path == "/api/study":
                     out = study_payload(db, learner, cid)
                 elif path == "/api/research":
-                    out = research_gate(CONCEPT_MAP[cid], str(body.get("question", "")))
+                    out = research_gate(CONCEPT_MAP[cid], body.get("question", ""))
                     event(db, learner, "research-gate", cid, out)
                 elif path == "/api/import":
                     if body.get("authorized") is not True:

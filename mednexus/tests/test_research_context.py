@@ -59,7 +59,9 @@ class ResearchContextTests(unittest.TestCase):
     def test_eyelid_cause_question_passes_current_gate_without_global_remapping(self):
         with patch.object(server, "pubmed", return_value=self.remote_result) as remote:
             result = self.search({"concept": "oculomotor", "question": "眼睑下垂是否与病因有关？"})
-        self.assertEqual(result["query"], server.CONCEPT_MAP["oculomotor"]["query"])
+        self.assertIn('"third nerve palsy"[Title/Abstract]', result["query"])
+        self.assertIn('etiology[Title/Abstract]', result["query"])
+        self.assertNotIn('pupil[Title/Abstract]', result["query"])
         self.assertEqual(remote.call_args.args[0], result["query"])
 
     def test_edited_query_is_used_with_original_question(self):
@@ -72,6 +74,40 @@ class ResearchContextTests(unittest.TestCase):
         self.assertEqual(result["query"], query)
         self.assertEqual(result["question"], body["question"])
         self.assertIn("用户", result["mapping"])
+
+    def test_gate_returns_transparent_focus_proposal_without_querying_pubmed(self):
+        with patch.object(server, 'pubmed') as remote:
+            status, result = self.post({'concept': 'oculomotor', 'question': '动眼神经损伤恢复是否存在差异？'}, path='/api/research')
+        self.assertEqual(status, 200)
+        self.assertEqual(result['query_plan']['focus']['id'], 'recovery')
+        self.assertEqual(result['query_plan']['original_query'], server.CONCEPT_MAP['oculomotor']['query'])
+        self.assertIn('recovery[Title/Abstract]', result['query'])
+        remote.assert_not_called()
+
+    def test_gate_rejects_private_invalid_and_oversized_questions_before_recording(self):
+        for question in (None, [], {}, 42, '字' * 301, '动眼神经恢复patient@example.com', '姓名：测试；动眼神经恢复'):
+            with self.subTest(question_type=type(question).__name__), patch.object(server, 'event') as event, patch.object(server, 'pubmed') as remote:
+                status, _ = self.post({'concept': 'oculomotor', 'question': question}, path='/api/research')
+            self.assertEqual(status, 400)
+            event.assert_not_called()
+            remote.assert_not_called()
+
+    def test_edited_query_overrides_the_new_focus_proposal_exactly(self):
+        query = 'oculomotor[Title/Abstract] AND prognosis[Title/Abstract]'
+        with patch.object(server, 'pubmed', return_value=self.remote_result) as remote:
+            status, result = self.post({'concept': 'oculomotor', 'question': '动眼神经损伤恢复是否存在差异？', 'query': query})
+        self.assertEqual(status, 200)
+        self.assertEqual(result['query'], query)
+        remote.assert_called_once_with(query, sort='pub date')
+
+    def test_invalid_question_types_cannot_bypass_gate_via_search_endpoints(self):
+        for path in ('/api/pubmed', '/api/literature'):
+            for question in (['动眼神经损伤恢复是否存在差异？'], {'question':'动眼神经恢复是否不同？'}, None, 42):
+                with self.subTest(path=path, question_type=type(question).__name__), patch.object(server, 'event') as event, patch.object(server, 'pubmed') as remote:
+                    status, _ = self.post({'concept':'oculomotor', 'question':question, 'query':'oculomotor AND recovery'}, path=path)
+                self.assertEqual(status, 400)
+                event.assert_not_called()
+                remote.assert_not_called()
 
     def test_edited_query_cannot_bypass_recall_question_gate(self):
         with patch.object(server, "pubmed") as remote:
