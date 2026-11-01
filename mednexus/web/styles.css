@@ -627,6 +627,17 @@ svg { width: 1.2em; height: 1.2em; fill: none; stroke: currentColor; stroke-widt
 .task-calibration { color: #9d4c24; line-height: 1.7; }
 .task-draft-status { min-height: 1.5em; }
 .task-reflection :disabled { opacity: .65; }
+.paper-reading-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+.reading-title { line-height: 1.6; overflow-wrap: anywhere; }
+.reading-notice { margin-top: 16px; padding: 12px; background: var(--blue-soft); border-radius: 10px; font-size: 13px; line-height: 1.8; }
+.reading-section { min-width: 0; padding: 16px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; }
+.reading-section h5 { margin: 0 0 10px; font-size: 14px; }
+.reading-origin-label { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.reading-excerpt { margin: 10px 0; font-size: 13px; line-height: 1.9; white-space: pre-wrap; overflow-wrap: anywhere; }
+.reading-original { color: var(--blue-deep); font-size: 13px; }
+.reading-missing, .reading-ai { margin: 14px 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.reading-missing summary, .reading-ai summary { cursor: pointer; color: var(--blue-deep); font-size: 13px; }
+@media (max-width: 720px) { .paper-reading-grid { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 720px) {
   .quicknote-panel { padding: 16px; }
   .quicknote-filters { grid-template-columns: 1fr; }

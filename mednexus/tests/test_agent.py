@@ -210,6 +210,18 @@ class AgentTests(unittest.TestCase):
         with patch('server.ncbi_get',side_effect=AssertionError('cache not used')):
             self.assertTrue(server.pubmed('test')['cached'])
 
+    def test_pubmed_retains_nlm_categories_even_without_publisher_labels(self):
+        search = json.dumps({'esearchresult': {'idlist': ['2345'], 'count': '1'}}).encode()
+        fetch = b'''<PubmedArticleSet><PubmedArticle><MedlineCitation><PMID>2345</PMID><Article>
+          <ArticleTitle>Synthetic category fixture</ArticleTitle><Abstract>
+          <AbstractText NlmCategory="METHODS">Synthetic methods only.</AbstractText>
+          <AbstractText Label="FINDINGS" NlmCategory="RESULTS">Synthetic result only.</AbstractText>
+          </Abstract></Article></MedlineCitation></PubmedArticle></PubmedArticleSet>'''
+        with patch('server.ncbi_get', side_effect=[search, fetch]):
+            paper = server.pubmed('synthetic category fixture')['papers'][0]
+        self.assertEqual(paper['abstract'][0], {'label': '', 'category': 'METHODS', 'text': 'Synthetic methods only.'})
+        self.assertEqual(paper['abstract'][1]['category'], 'RESULTS')
+
     def test_full_recovery_loop_remains_conservative(self):
         with server.connect() as db:
             self.answer(db,correct_count=1,kind='diagnostic')

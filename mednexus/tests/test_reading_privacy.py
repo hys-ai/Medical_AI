@@ -78,6 +78,57 @@ class ReadingPrivacyTests(unittest.TestCase):
         self.assertEqual(result["question"], question)
         self.assertEqual(provider.call_args.args[1]["learning_question"], question)
 
+    def test_independent_reading_keeps_its_question_without_inventing_a_concept(self):
+        with patch.object(server, 'API_KEY', ''):
+            status, result = self.post({'concept': None, 'question': 'microglia synaptic pruning'})
+        self.assertEqual(status, 200)
+        self.assertIsNone(result['concept'])
+        self.assertEqual(result['question'], 'microglia synaptic pruning')
+        self.assertTrue(result['sections'])
+        self.assertNotIn('ai_guide', result)
+        self.assertIn('Fixture result', json.dumps(result['sections']))
+        with server.connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM attempts').fetchone()[0], 0)
+            event = db.execute("SELECT concept FROM events WHERE kind='read-paper' AND learner=?", (self.learner,)).fetchone()
+        self.assertEqual(event[0], '')
+
+    def test_independent_reading_still_requires_an_original_question_and_a_real_cached_pmid(self):
+        for fields in ({'concept': None}, {'concept': None, 'question': ''},
+                       {'concept': None, 'question': 'microglia', 'pmid': '999999'},
+                       {'concept': 'invented', 'question': 'microglia'},
+                       {'concept': [], 'question': 'microglia'}):
+            with self.subTest(fields=fields), patch.object(server, 'event') as event:
+                status, _ = self.post(fields)
+                self.assertEqual(status, 400)
+                event.assert_not_called()
+
+    def test_independent_private_question_is_rejected_without_provider_or_event(self):
+        with patch.object(server, 'API_KEY', 'fixture'), patch.object(server, 'event') as event, \
+                patch.object(server, 'model_json') as provider:
+            status, _ = self.post({'concept': None, 'question': 'patient name: synthetic'})
+        self.assertEqual(status, 400)
+        event.assert_not_called()
+        provider.assert_not_called()
+
+    def test_reading_prefers_newest_category_preserving_cache_for_the_same_pmid(self):
+        paper = {**self.paper, 'title': 'NEW_SCHEMA', 'abstract': [
+            {'label': '', 'category': 'METHODS', 'text': 'Synthetic classified methods.'}]}
+        with server.connect() as db:
+            db.execute('INSERT INTO cache VALUES(?,?,?)', ('v2', json.dumps({'schema_version': 2, 'papers': [paper]}), 2))
+            # A more recently touched legacy query must not erase known category metadata.
+            db.execute('INSERT INTO cache VALUES(?,?,?)', ('legacy', json.dumps({'papers': [self.paper]}), 99))
+        with patch.object(server, 'API_KEY', ''):
+            status, result = self.post({'question': '上斜肌恢复是否有差异？'})
+        self.assertEqual(status, 200)
+        self.assertEqual(result['paper']['title'], 'NEW_SCHEMA')
+        methods = next(section for section in result['sections'] if section['id'] == 'methods')
+        self.assertEqual(methods['excerpts'][0]['category'], 'METHODS')
+        with server.connect() as db:
+            db.execute('INSERT INTO cache VALUES(?,?,?)', ('v2-newer', json.dumps({
+                'schema_version': 2, 'papers': [{**paper, 'title': 'NEWEST_SCHEMA'}]}), 3))
+        with patch.object(server, 'API_KEY', ''):
+            self.assertEqual(self.post({'question': '上斜肌恢复是否有差异？'})[1]['paper']['title'], 'NEWEST_SCHEMA')
+
 
 if __name__ == "__main__":
     unittest.main()

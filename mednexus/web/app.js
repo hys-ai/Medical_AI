@@ -665,7 +665,7 @@ function paperCard(p) {
     a.target = "_blank";
     a.rel = "noopener";
     card.appendChild(a);
-    if (wanderOriginConcept) {
+    if (researchContext?.question) {
       const read = el("button", "link paper-read", "阅读摘要与证据 →");
       read.type = "button";
       read.addEventListener("click", () => loadPaperReading(p));
@@ -871,7 +871,7 @@ async function pmSearch(q, originConcept = null, editedQuery = null) {
 
 async function loadPaperReading(paper) {
   const context = researchContext;
-  if (!context?.concept) return;
+  if (!context?.question) return;
   const request = ++readingRequestId;
   const panel = $("paperReading");
   const body = $("paperReadingBody");
@@ -880,29 +880,17 @@ async function loadPaperReading(paper) {
   panel.scrollIntoView({ behavior: "smooth", block: "start" });
   try {
     const result = await api("/api/read-paper", {
-      concept: context.concept, pmid: paper.pmid, question: context.question
+      concept: context.concept || null, pmid: paper.pmid, question: context.question
     });
     if (request !== readingRequestId) return;
-    body.innerHTML = "";
-    body.appendChild(el("h4", null, result.paper.title));
-    body.appendChild(el("p", "study-label", "围绕问题：" + result.question));
-    const evidence = (result.evidence || []).map((part) => part.text).filter(Boolean);
-    const excerpt = evidence.join(" ").slice(0, 400);
-    body.appendChild(el("p", "answer", excerpt ?
-      "摘要中的结果或结论摘录：" + excerpt + (evidence.join(" ").length > 400 ? "…" : "") :
-      "摘要未提供可直接提取的结果或结论段落。"));
-    body.appendChild(el("p", "study-source", result.limitations));
-    body.appendChild(el("p", "study-source", result.relationship));
-    if (result.ai_guide) {
-      body.appendChild(el("h4", null, "AI 辅助摘要解读（需对照原摘要核验）"));
-      [["question", "问题"], ["evidence", "证据"], ["limitations", "局限"], ["relationship", "与课程知识的关系"]].forEach(([key, label]) => {
-        body.appendChild(el("p", "study-source", label + "：" + (result.ai_guide[key] || "摘要未报告")));
-      });
-    }
-    if (result.warning) body.appendChild(el("p", "study-source", result.warning));
+    mountPaperReading(body, result);
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (e) {
     if (request !== readingRequestId) return;
     body.textContent = "摘要读取失败：" + e.message;
+    const retry = el('button', 'btn', '重试读取这篇摘要'); retry.type = 'button';
+    retry.addEventListener('click', () => { if (researchContext === context) loadPaperReading(paper); });
+    body.appendChild(retry);
   }
 }
 
@@ -958,7 +946,12 @@ $("pmForm").addEventListener("submit", (e) => {
   pmSearch($("pmQ").value, wanderOriginConcept);
 });
 $("runResearchQuery").addEventListener("click", () => pmSearch($("pmQ").value, wanderOriginConcept, $("pmQuery").value));
-$("pmQuery").addEventListener("input", rememberResearchWorkspace);
+$("pmQuery").addEventListener("input", () => {
+  pmRequestId++; readingRequestId++;
+  $("pmResults").innerHTML = ""; $("paperReading").hidden = true;
+  $("pmStatus").textContent = "检索式已修改，请确认后主动重新检索。";
+  rememberResearchWorkspace();
+});
 $("newResearch").addEventListener("click", () => {
   resetResearchContext(); $("pmQ").focus();
   $("pmStatus").textContent = "已开启独立检索。可输入医学主题或英文 PubMed 检索式。";

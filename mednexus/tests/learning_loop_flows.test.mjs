@@ -27,6 +27,7 @@ function setup(overrides={}) {
     quizLoading:false,quizSubmitting:false,quizHintLoading:false,quizPhase:'empty',quizConcept:null,quizTask:null,overviewData:null,
     $:id=>nodes[id]??=new Node(),el:(...args)=>new Node(...args),toast:()=>{},
     renderPapers:()=>{},renderQuiz:()=>{},showView:()=>{},loadTask:()=>{},openConceptQuestion:()=>{},...overrides});
+  vm.runInContext(readFileSync(new URL('../web/paper-reading.js',import.meta.url),'utf8'),ctx);
   vm.runInContext(segment('function resetResearchContext()', 'async function loadPaperReading'),ctx);
   vm.runInContext(segment('function mountResearchBridge(', 'async function loadLearningReport('),ctx);
   return {ctx,nodes};
